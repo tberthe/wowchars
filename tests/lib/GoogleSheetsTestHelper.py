@@ -1,7 +1,9 @@
 import sys, os
+import string, random
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from wowchars import SheetConnector
+from wowchars import SheetConnector, RGBColor
 
 class GoogleSheetsTestHelper(object):
     def __init__(self):
@@ -47,3 +49,15 @@ class GoogleSheetsTestHelper(object):
             sheet_id = sheets[s]
             if sheet_id:
                 self.connector.delete_sheet(s)
+
+    def get_random_cell_index(self): 
+        c = (random.choice(string.ascii_uppercase), random.randrange(2, 21))
+        return c
+
+    def set_cell_color(self, sheetName, cell, hex_color):
+        color = RGBColor.from_hex(hex_color)
+        self.connector.set_background_color(sheetName, cell[0], cell[1], color)
+
+    def get_cell_hex_color(self, sheetName, cell):
+        color = self.connector.get_background_color(sheetName, cell[0], cell[1])
+        return color.to_hex()

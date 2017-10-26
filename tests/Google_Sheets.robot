@@ -102,6 +102,37 @@ Ensure Headers
     ${RES_LIST} =  Get Values  ${SHEET CR2}!1:1
     Lists Should Be Equal  ${REF_LIST}  ${RES_LIST}
 
+Get Background Colors
+    [Setup]       Connect  ${SPREADSHEET ID}
+    [Template]    Check Background Color
+    ${SHEET1}  A  ${1}  \#000000
+    ${SHEET1}  B  ${1}  \#FF0000
+    ${SHEET1}  C  ${1}  \#00FF00
+    ${SHEET1}  D  ${1}  \#0000FF
+    ${SHEET1}  E  ${1}  \#FFFFFF
+
+
+Set Background Colors
+    [Setup]       Connect  ${SPREADSHEET ID}
+    [Template]    Set And Check Background Color
+    ${SHEET1}  \#FFFFFF
+    ${SHEET1}  \#000000
+    ${SHEET1}  \#FF0000
+    ${SHEET1}  \#00FF00
+    ${SHEET1}  \#0000FF
+    ${SHEET1}  \#FF7D0A
+    ${SHEET1}  \#9482C9
+    ${SHEET1}  \#0070DE
+    ${SHEET1}  \#F58CBA
+    ${SHEET1}  \#C79C6E
+    ${SHEET1}  \#C41F3B
+    ${SHEET1}  \#A330C9
+    ${SHEET1}  \#00FF96
+    ${SHEET1}  \#69CCF0
+    ${SHEET1}  \#ABD473
+    ${SHEET1}  \#FFF569
+
+
 *** Keywords ***
 
 Sheet Should Exist
@@ -114,3 +145,16 @@ Sheet Should Not Exist
     ${RESULT} =    Sheet Exists    ${sheetname}
     Should Be Equal    ${RESULT}    ${FALSE}
 
+Check Background Color
+    [Arguments]    ${sheet}  ${col}  ${row}  ${ref_hex_color}
+    ${CELL} =  Create List
+    Append To List  ${CELL}  ${col}  ${row}
+    ${HEX_COLOR} =  Get Cell Hex Color  ${sheet}  ${CELL}
+    Should Be Equal  ${HEX_COLOR}  ${ref_hex_color}
+
+Set And Check Background Color
+    [Arguments]    ${sheet}  ${ref_hex_color}
+    ${CELL} =  Get Random Cell Index
+    Set Cell Color  ${sheet}  ${CELL}  ${ref_hex_color}
+    ${HEX_COLOR} =  Get Cell Hex Color  ${sheet}  ${CELL}
+    Should Be Equal  ${HEX_COLOR}  ${ref_hex_color}

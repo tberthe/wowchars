@@ -3,11 +3,10 @@
 __version__="1.0"
 
 """
-TODO: option to set the default server
 TODO: remove hardcoded enchants / gems suggestions
       ==> replace by CSV file
       and/or
-      ==> retrieve advises from websites like Noxxic or Icy Veins
+      ==> retrieve advices from websites like Noxxic or Icy Veins
 TODO: [Google Sheets] colorize names with class colors ?
 TODO: [Google Sheets] header freeze + color?
 TODO: [Google Sheets] automatically add graph(s) ?
@@ -36,6 +35,7 @@ logger = logging.getLogger('wowchars')
 BASE_CHAR_URL   = "https://eu.api.battle.net/wow/character/{server}/{name}?fields={fields}&apikey={apikey}"
 BASE_ACHIEV_URL = "https://eu.api.battle.net/wow/achievement/{id}?apikey={apikey}"
 BASE_ITEM_URL   = "https://eu.api.battle.net/wow/item/{id}{slash_context}?bl={bonus_list}&apikey={apikey}"
+CLASSES_URL     = "https://eu.api.battle.net/wow/data/character/classes?locale=en_GB&apikey={apikey}"
 
 ##########
 # Headers
@@ -101,6 +101,7 @@ class CharInfo(dict):
         super(dict, self).__init__()
         self[H_SERVER] = server
         self[H_NAME] = name
+        self.classname = None
 
     def server(self):
         """Get character's server
@@ -144,6 +145,29 @@ class CharInfo(dict):
         self[key] = value
         logger.info("%s: %s", key, value)
 
+    def get_hex_color(self):
+        COLOR_DICT = {
+            "Druid": "#FF7D0A",
+            "Warlock": "#9482C9",
+            "Shaman": "#0070DE",
+            "Paladin": "#F58CBA",
+            "Warrior": "#C79C6E",
+            "Priest": "#FFFFFF",
+            "Death Knight": "#C41F3B",
+            "Demon Hunter": "#A330C9",
+            "Monk": "#00FF96",
+            "Mage": "#69CCF0",
+            "Hunter": "#ABD473",
+            "Rogue": "#FFF569",
+        }
+        if self.classname in COLOR_DICT:
+            return COLOR_DICT[self.classname]
+        elif self.classname:
+            logger.error("Color not found for class '%s'" % self.classname)
+        else:
+            logger.error("Classname not set when requiring color")
+        return "#FFFFFF"
+
 
 class CharactersExtractor:
     """Class processing World Of Warcraft characters:
@@ -160,6 +184,7 @@ class CharactersExtractor:
         self.achievements = [] # achievement details
         self.characters = []   # fetched characters
         self.to_fix = {}       # {char, [to fix]}
+        self.classnames = {}   # {id, classname}
 
     def run(self, chars, csv_output, summary,
             check_gear, google_sheet_id, dry_run,
@@ -176,6 +201,7 @@ class CharactersExtractor:
             default_server (string): default server if not given in 'chars'
         """
         self.fetch_achievements_details()
+        self.fetch_classes()
 
         for c in chars:
             self.fetch_char(c, default_server, check_gear)
@@ -259,10 +285,12 @@ class CharactersExtractor:
         r = requests.get(url)
         r.raise_for_status()
         char_json = r.json()
+        char.classname = self.classnames[char_json["class"]]
         char.set_data(H_LVL, str(char_json[H_LVL]))
         items = char_json["items"]
         char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
 
+        # Checking legendary items
         leg_info_array = []
         for slot in sorted(items):
             item = items[slot]
@@ -275,6 +303,7 @@ class CharactersExtractor:
 
         char.set_data(H_LEG_ITEMS, ("+").join(leg_info_array))
 
+        # Checking gear
         if check_gear:
             total_empty_sockets = 0
             missing_enchants = []
@@ -508,6 +537,7 @@ class CharactersExtractor:
             char.set_data("profession %d"%count, "%3d: %s" % (profession["rank"], profession["name"]))
 
     def fetch_achievements_details(self):
+        """Fetch details for the achievements to check"""
         print("======================================================")
         print("Fetching achievements details")
         for a_id in ACHIEVEMENTS + STEPPED_ACHIEVEMENTS:
@@ -518,6 +548,21 @@ class CharactersExtractor:
             ach = r.json()
             logger.info("%6d: %s", ach["id"], ach["title"])
             self.achievements.append(ach)
+
+    def fetch_classes(self):
+        """Fetch the 'class id' to 'name' mapping"""
+        print("======================================================")
+        print("Fetching classes")
+        url = CLASSES_URL.format(apikey=self.bnet_key)
+        logger.debug(url)
+        r = requests.get(url)
+        r.raise_for_status()
+        classes = r.json()["classes"]
+        for c in classes:
+            cid = int(c["id"])
+            name = c["name"]
+            self.classnames[cid] = name
+            logger.info("%2d: %s", cid, name)
 
     def get_achievement_title(self, ach_id):
         """Get name of a known achievement
@@ -614,17 +659,20 @@ class CharactersExtractor:
         print("======================================================")
         print("Synching summary in Google Sheets")
 
-        sc = SheetConnector(google_sheet_id, dry_run)
-        sc.check_or_create_sheet("summary")
-        fieldnames = self.get_ordered_fieldnames()
-        sc.ensure_headers("summary", fieldnames)
+        SUMMARY = "summary"
 
-        sheet_values = sc.get_values("summary!A:Z")
+        sc = SheetConnector(google_sheet_id, dry_run)
+        sc.check_or_create_sheet(SUMMARY)
+        fieldnames = self.get_ordered_fieldnames()
+        sc.ensure_headers(SUMMARY, fieldnames)
+
+        sheet_values = sc.get_values(SUMMARY+"!A:Z")
         headers = sheet_values[0]
         h_indexes = {h:i for i, h in enumerate(headers)}
         values = sheet_values[1:]
 
-        update_data = []
+        update_data = []  # cell values to update
+        to_colorize = []  # cells to colorize (when adding new character(s))
 
         # updating / adding characters info
         for r in sorted(self.characters, key=lambda x:x[H_ILVL], reverse=True):
@@ -642,18 +690,24 @@ class CharactersExtractor:
                         cell_id = "%s%d" %(column_letter(i), char_index+2)
                         update_data.append({
                             "values": [[r[h]]],
-                            "range": "%s:%s"%(cell_id, cell_id),
+                            "range": SUMMARY+"!%s:%s"%(cell_id, cell_id),
                         })
             else:
                 line = [(r[h] if h in fieldnames else None) for h in headers]
                 values.append(line)
+                row_index = len(values)+1
                 update_data.append({
                     "values": [line],
-                    "range": "A{row}:Z{row}".format(row=len(values)+1),
+                    "range": SUMMARY+"!A{row}:Z{row}".format(row=row_index),
                 })
+                to_colorize.append((h_indexes[H_NAME], row_index, r.get_hex_color()))
 
         if update_data:
             sc.update_values(update_data)
+            for tc in to_colorize:
+                color = RGBColor.from_hex(tc[2])
+                column = column_letter(tc[0])
+                sc.set_background_color(SUMMARY, column, tc[1], color)
         else:
             print("Nothing to update")
 
@@ -703,6 +757,8 @@ class CharactersExtractor:
             line = values[-1] if last_update_today else ([None] * len(headers))
             for i, h in enumerate(headers):
                 if h in v_dict:
+                    if len(line) <= i:
+                        line += [None] * (i+1-len(line))
                     line[i] = v_dict[h]
             line[h_indexes[H_DATE]] = today
 
@@ -762,6 +818,105 @@ def column_letter(index):
         if i < 0:
             break
     return res
+
+
+def column_index(column_str):
+    """In Sheets the columns are identified by letters, not integers.
+    This function translates the column string into an integer index.
+
+    Args:
+        index (str): column identifier
+
+    Returns:
+        (int) the translated index
+    """
+    res = string.ascii_uppercase.index(column_str[-1])
+    mult = 1
+    for l in column_str[-2::-1]:
+        mult *= len(string.ascii_uppercase)
+        res += (1+string.ascii_uppercase.index(l)) * mult
+    return res
+
+
+class RGBColor:
+    """Helper class to easily deal with colors"""
+    def __init__(self, red, green, blue):
+        """Constructor
+
+        Args:
+            red (int): red integer value (from 0 to 255)
+            green (int): green integer value (from 0 to 255)
+            blue (int): blue integer value (from 0 to 255)
+        """
+        self.red = red
+        self.green = green
+        self.blue = blue
+
+    @classmethod
+    def from_float_rgb(fgbc, fred, fgreen, fblue):
+        """Factory to create RGBColor from float values
+
+        Args:
+            fgbc (int): red float value (from 0 to 1)
+            fgreen (int): green float value (from 0 to 1)
+            fblue (int): blue float value (from 0 to 1)
+
+        Returns:
+            a RGBColor object
+        """
+        r = int(int(round(fred * 255)))
+        g = int(int(round(fgreen * 255)))
+        b = int(int(round(fblue * 255)))
+        return fgbc(r, g, b)
+
+    @classmethod
+    def from_float_rgb_dict(fgbc, d):
+        """Factory to create RGBColor from float values
+
+        Args:
+            d (dict): dictionnary containing the red/green/blue float values
+
+        Returns:
+            a RGBColor object
+        """
+        r = d["red"] if "red" in d else 0.0
+        g = d["green"] if "green" in d else 0.0
+        b = d["blue"] if "blue" in d else 0.0
+        return fgbc.from_float_rgb(r, g, b)
+
+    @classmethod
+    def from_hex(fgbc, hex_code):
+        """Factory to create RGBColor from the hexadecimal value
+
+        Args:
+            hex_code (str): hexadecimal string of the color, with or without hash. (ex: "#FF0000")
+
+        Returns:
+            a RGBColor object
+        """
+        h = hex_code.lstrip('#')
+        rgb = tuple(int(h[i:i+2], 16) for i in (0, 2 ,4))
+        return fgbc(rgb[0], rgb[1], rgb[2])
+
+    def to_hex(self):
+        """Returns: color as a hexadecimal string (ex: "#FF0000")"""
+        return '#%02X%02X%02X' % (self.red, self.green, self.blue)
+
+    def to_float_rgb_dict(self):
+        """Returns: color as a dictionnary with float values"""
+        return {"red": self.red / 255.0,
+                "green": self.green / 255.0,
+                "blue": self.blue / 255.0}
+
+    def to_rgb_dict(self):
+        """Returns: color as a dictionnary with int values"""
+        return {"red": self.red,
+                "green": self.green,
+                "blue": self.blue}
+
+    def __eq__(self, other):
+        """Equality operator"""
+        return (self.red == other.red) and (self.green == other.green) and (self.blue == other.blue)
 
 
 # If modifying these scopes, delete your previously saved credentials
@@ -884,7 +1039,6 @@ class SheetConnector:
                 appended_headers.append(field)
                 g_headers_indexes[field] = len(g_headers)
 
-
         if(appended_headers):
             range_name = "%s!%s1:Z1" % (sheetName, column_letter(len(g_headers_indexes) - len(appended_headers)))
             logger.info("Adding headers in %s => %s", range_name, appended_headers)
@@ -943,6 +1097,53 @@ class SheetConnector:
                 credentials = tools.run(flow, store)
             print('Storing credentials to ' + credential_path)
         return credentials
+
+    def get_background_color(self, sheet, column, row):
+        """Get background color of a cell
+
+        Args:
+            sheet (string): name of the sheet
+            column (string): column id of the cell
+            row (int): row of the cell
+
+        Returns:
+            The background color as a RGBColor object
+        """
+        ranges = "%s!%s%d" % (sheet, column, row)
+        data = self.service.spreadsheets().get(spreadsheetId=self.spreadsheetId, ranges=ranges, includeGridData=True).execute()
+        v = data["sheets"][0]["data"][0]["rowData"][0]["values"][0]
+        if "effectiveFormat" in v:
+            return RGBColor.from_float_rgb_dict(v["effectiveFormat"]["backgroundColor"])
+        else:
+            return RGBColor.from_float_rgb_dict(v["userEnteredFormat"]["backgroundColor"])
+
+    def set_background_color(self, sheet_name, column, row, rgb_color):
+        col_i = column_index(column) if type(column) is str else column
+
+        sheets = self.get_sheets()
+
+        body = {
+          "requests": [
+            {
+              "repeatCell": {
+                "range": {
+                  "sheetId": sheets[sheet_name],
+                  "startRowIndex": row-1,
+                  "endRowIndex": row,
+                  "startColumnIndex": col_i,
+                  "endColumnIndex": col_i+1
+                },
+                "cell": {
+                  "userEnteredFormat": {
+                    "backgroundColor": rgb_color.to_float_rgb_dict()
+                  }
+                },
+                "fields": "userEnteredFormat(backgroundColor)"
+              }
+            },
+          ]
+        }
+        self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
 
 if __name__ == "__main__":
