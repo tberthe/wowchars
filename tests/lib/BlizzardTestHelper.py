@@ -12,6 +12,7 @@ class BlizzardTestHelper(object):
             print("*WARN* Already initialized")
             return
         self.extractor = wowchars.CharactersExtractor(api_key)
+        self.extractor.fetch_classes()
 
     def get_level(self, server, name):
         char = wowchars.CharInfo(server, name)
