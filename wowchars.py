@@ -36,6 +36,7 @@ BASE_CHAR_URL   = "https://eu.api.battle.net/wow/character/{server}/{name}?field
 BASE_ACHIEV_URL = "https://eu.api.battle.net/wow/achievement/{id}?apikey={apikey}"
 BASE_ITEM_URL   = "https://eu.api.battle.net/wow/item/{id}{slash_context}?bl={bonus_list}&apikey={apikey}"
 CLASSES_URL     = "https://eu.api.battle.net/wow/data/character/classes?locale=en_GB&apikey={apikey}"
+GUILD_URL       = "https://eu.api.battle.net/wow/guild/{server}/{name}?fields={fields}&apikey={apikey}"
 
 ##########
 # Headers
@@ -65,6 +66,7 @@ def main():
     parser.add_argument("-b", "--bnet-api-key", help="Key to Blizzard's Battle.net API", required=True)
     parser.add_argument("-o", "--output", help="Output CSV file", required=False)
     parser.add_argument("-c", "--char", help="Check character (server:charname)", action="append", default=[], required=True)
+    parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 110")
     parser.add_argument("-s", "--summary", help="Display summary", action="store_true")
     parser.add_argument("-v", "--verbosity", action="count", default=0, help="increase output verbosity")
     parser.add_argument("-g", "--google-sheet", help="ID of the Google sheet where the results will be saved")
@@ -77,7 +79,8 @@ def main():
     set_logger(args.verbosity)
 
     ce = CharactersExtractor(args.bnet_api_key)
-    ce.run(args.char,
+    ce.run(args.guild,
+           args.char,
            args.output,
            args.summary,
            args.check_gear,
@@ -186,12 +189,13 @@ class CharactersExtractor:
         self.to_fix = {}       # {char, [to fix]}
         self.classnames = {}   # {id, classname}
 
-    def run(self, chars, csv_output, summary,
+    def run(self, guild, chars, csv_output, summary,
             check_gear, google_sheet_id, dry_run,
             default_server):
         """main function
 
         Args:
+            guild (str or None): guild to process
             chars (str array): list of characters to process
             csv_output (str): if not None, save results in the CSV file
             summary (bool): print a results' sumamry
@@ -203,7 +207,9 @@ class CharactersExtractor:
         self.fetch_achievements_details()
         self.fetch_classes()
 
-        for c in chars:
+        guild_chars = self.find_guild_characters(guild, default_server) if guild else []
+
+        for c in guild_chars + chars:
             self.fetch_char(c, default_server, check_gear)
 
         if csv_output:
@@ -233,6 +239,46 @@ class CharactersExtractor:
             if (r.server() == server) and (r.name() == name):
                 return r
         return None
+
+    def find_guild_characters(self, serv_and_guildname, default_server=None):
+        """Find characters from given list
+
+        Args:
+            serv_and_guildname (str): server and name of the guild to prcess.
+                                      Expected format is "server:guildname".
+                                      Using only the guildname is supported but
+                                      will produce a warning.
+        """
+        print("======================================================")
+        print("Processing guild: '%s'" % serv_and_guildname)
+        server = None
+        name = None
+        try:
+            server, name = serv_and_guildname.split(":")
+        except ValueError:
+            if default_server:
+                logger.info("no server name, using default server '%s'", default_server)
+                server = default_server
+            else:
+                logger.warn("no server name, using default server 'voljin'")
+                server = "voljin"
+            name = serv_and_guildname
+
+        url = GUILD_URL.format(apikey=self.bnet_key, server=server, name=name, fields="members")
+        logger.debug(url)
+        r = requests.get(url)
+        r.raise_for_status()
+        members = r.json()["members"]
+        guild_chars = []
+        for m in members:
+            charname = m["character"]["name"]
+            level = m["character"]["level"]
+            realm = m["character"]["realm"]
+            logger.debug(level, charname)
+            if level >= 110:
+                logger.info("Found valid character: %3d %s", level, charname)
+                guild_chars.append("%s:%s"%(realm, charname))
+        return guild_chars
 
     def fetch_char(self, serv_and_name, default_server=None, check_gear=False):
         """Fetch and register a character from Blizzard's API.
