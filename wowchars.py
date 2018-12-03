@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 
-__version__="1.0"
+__version__="2.0"
 
 """
 TODO: remove hardcoded enchants / gems suggestions
       ==> replace by CSV file
       and/or
       ==> retrieve advices from websites like Noxxic or Icy Veins
+
+TODO: add suboptions to --guild: min level, min ilvl
 TODO: [Google Sheets] colorize names with class colors ?
 TODO: [Google Sheets] header freeze + color?
 TODO: [Google Sheets] automatically add graph(s) ?
+TODO: migrate to WOW Community API to the new WOW Game Data API
+TODO: option to select another region (EU, KR, US, TW)
 """
 
 import requests
@@ -30,7 +34,7 @@ from oauth2client.file import Storage
 
 logger = logging.getLogger('wowchars')
 
-##########
+####################
 # URLs
 BASE_CHAR_URL   = "https://eu.api.battle.net/wow/character/{server}/{name}?fields={fields}&apikey={apikey}"
 BASE_ACHIEV_URL = "https://eu.api.battle.net/wow/achievement/{id}?apikey={apikey}"
@@ -38,35 +42,29 @@ BASE_ITEM_URL   = "https://eu.api.battle.net/wow/item/{id}{slash_context}?bl={bo
 CLASSES_URL     = "https://eu.api.battle.net/wow/data/character/classes?locale=en_GB&apikey={apikey}"
 GUILD_URL       = "https://eu.api.battle.net/wow/guild/{server}/{name}?fields={fields}&apikey={apikey}"
 
-##########
+####################
 # Headers
 H_DATE        = "date"
 H_SERVER      = "server"
 H_NAME        = "name"
+H_CLASS       = "class"
 H_LVL         = "level"
 H_ILVL        = "ilvl"
-H_3RD_RELIC   = "3rd relic"
-H_CLASS_CHAMPIONS = "class champions"
-H_CLASS_MOUNT = "class mount"
-H_LEG_ITEMS   = "leg. items"
 
-# Achievements
-A_POWER_UNBOUND           = 11609
-A_CHAMPIONS_OF_LEGIONFALL = 11846
-A_BREACHING_THE_TOMB      = 11546
-#A_ROSTER_OF_CHAMPIONS     = 11220 #checked directly via criteria to check the 9 champions
-A_LEGENDARY_RESEARCH      = 11223
-#A_POWER_ASCENDED          = 11772
-ACHIEVEMENTS         = (A_POWER_UNBOUND, A_CHAMPIONS_OF_LEGIONFALL, A_LEGENDARY_RESEARCH,)
-STEPPED_ACHIEVEMENTS = (A_BREACHING_THE_TOMB,)
+####################
+# Achievements: {ID: stepped}
+ACHIEVEMENTS = { 
+    #11609: False,  # POWER_UNBOUND
+}
 
 
 def main():
     parser = argparse.ArgumentParser(parents=[tools.argparser])
     parser.add_argument("-b", "--bnet-api-key", help="Key to Blizzard's Battle.net API", required=True)
     parser.add_argument("-o", "--output", help="Output CSV file", required=False)
-    parser.add_argument("-c", "--char", help="Check character (server:charname)", action="append", default=[], required=True)
-    parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 110")
+    parser.add_argument("-c", "--char", help="Check character (server:charname)", action="append", default=[], required=False)
+    parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 111")
+    parser.add_argument("-r", "--raid", action="store_true", help="Only keeps info that are usefull for raids (class, lvl, ilvl)")
     parser.add_argument("-s", "--summary", help="Display summary", action="store_true")
     parser.add_argument("-v", "--verbosity", action="count", default=0, help="increase output verbosity")
     parser.add_argument("-g", "--google-sheet", help="ID of the Google sheet where the results will be saved")
@@ -81,6 +79,7 @@ def main():
     ce = CharactersExtractor(args.bnet_api_key)
     ce.run(args.guild,
            args.char,
+           args.raid,
            args.output,
            args.summary,
            args.check_gear,
@@ -104,7 +103,6 @@ class CharInfo(dict):
         super(dict, self).__init__()
         self[H_SERVER] = server
         self[H_NAME] = name
-        self.classname = None
 
     def server(self):
         """Get character's server
@@ -121,6 +119,14 @@ class CharInfo(dict):
             (str) name of the character
         """
         return self[H_NAME]
+
+    def classname(self):
+        """Get character's class
+
+        Returns:
+            (str) classname of the character
+        """
+        return self[H_CLASS]
 
     def level(self):
         """Get character's level
@@ -163,10 +169,10 @@ class CharInfo(dict):
             "Hunter": "#ABD473",
             "Rogue": "#FFF569",
         }
-        if self.classname in COLOR_DICT:
-            return COLOR_DICT[self.classname]
-        elif self.classname:
-            logger.error("Color not found for class '%s'" % self.classname)
+        if self.classname() in COLOR_DICT:
+            return COLOR_DICT[self.classname()]
+        elif self.classname():
+            logger.error("Color not found for class '%s'" % self.classname())
         else:
             logger.error("Classname not set when requiring color")
         return "#FFFFFF"
@@ -189,7 +195,7 @@ class CharactersExtractor:
         self.to_fix = {}       # {char, [to fix]}
         self.classnames = {}   # {id, classname}
 
-    def run(self, guild, chars, csv_output, summary,
+    def run(self, guild, chars, raid, csv_output, summary,
             check_gear, google_sheet_id, dry_run,
             default_server):
         """main function
@@ -197,6 +203,7 @@ class CharactersExtractor:
         Args:
             guild (str or None): guild to process
             chars (str array): list of characters to process
+            raid (bool): only keeps info usefull for raids
             csv_output (str): if not None, save results in the CSV file
             summary (bool): print a results' sumamry
             check_gear (bool): check gear for any missing gem or enchantment
@@ -210,7 +217,7 @@ class CharactersExtractor:
         guild_chars = self.find_guild_characters(guild, default_server) if guild else []
 
         for c in guild_chars + chars:
-            self.fetch_char(c, default_server, check_gear)
+            self.fetch_char(c, default_server, raid, check_gear)
 
         if csv_output:
             self.save_csv(csv_output)
@@ -218,12 +225,13 @@ class CharactersExtractor:
         if summary:
             self.display_summary()
 
-        if check_gear:
-            self.display_gear_to_fix()
-
         if google_sheet_id:
             self.save_summary_in_google_sheets(google_sheet_id, dry_run)
-            self.save_in_google_sheets_v2(google_sheet_id, dry_run)
+            if not raid:
+                self.save_extra_google_sheets(google_sheet_id, dry_run)
+
+        if check_gear:
+            self.display_gear_to_fix()
 
     def get_known_char(self, server, name):
         """Search an already known/processed character
@@ -274,21 +282,23 @@ class CharactersExtractor:
             charname = m["character"]["name"]
             level = m["character"]["level"]
             realm = m["character"]["realm"]
-            logger.debug(level, charname)
-            if level >= 110:
-                logger.info("Found valid character: %3d %s", level, charname)
+            logger.debug("%3d %s" %(level, charname))
+            if level >= 111:
+                logger.info("Found valid character: %3d %s" %(level, charname))
                 guild_chars.append("%s:%s"%(realm, charname))
         return guild_chars
 
-    def fetch_char(self, serv_and_name, default_server=None, check_gear=False):
+    def fetch_char(self, serv_and_name, default_server=None, raid=False,
+                   check_gear=False):
         """Fetch and register a character from Blizzard's API.
 
         Args:
             serv_and_name (str): server and name of the character to fetch.
                                  Expected format is "server:name". Using only
                                  the name is supported but will produce a warning.
-            check_gear (bool): check gear for any missing gem or enchantment
             default_server (string): default server if not given in 'serv_and_name'
+            raid (bool): Only keeps info that are usefull for raids (class, lvl, ilvl)
+            check_gear (bool): check gear for any missing gem or enchantment
         """
         print("======================================================")
         print("Processing: %s" % (serv_and_name))
@@ -312,8 +322,9 @@ class CharactersExtractor:
         char = CharInfo(server, name)
         try:
             self.fetch_char_base(char, check_gear)
-            self.fetch_char_achievements(char)
-            self.fetch_char_professions(char)
+            if not raid:
+                self.fetch_char_achievements(char)
+                self.fetch_char_professions(char)
         except (ValueError, KeyError):
             logger.error("cannot fetch %s/%s", server, name)
             return
@@ -331,29 +342,15 @@ class CharactersExtractor:
         r = requests.get(url)
         r.raise_for_status()
         char_json = r.json()
-        char.classname = self.classnames[char_json["class"]]
+        char.set_data(H_CLASS, self.classnames[char_json[H_CLASS]])
         char.set_data(H_LVL, str(char_json[H_LVL]))
         items = char_json["items"]
         char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
-
-        # Checking legendary items
-        leg_info_array = []
-        for slot in sorted(items):
-            item = items[slot]
-            if isinstance(item, dict) and "quality" in item and item["quality"] == 5:
-                leg_info_array.append(str(item["itemLevel"]))
-                logger.debug("Found legendary item: [%d] %s" % (item["itemLevel"], items[slot]["name"]))
-
-        if not leg_info_array:
-            leg_info_array = ["NO"]
-
-        char.set_data(H_LEG_ITEMS, ("+").join(leg_info_array))
 
         # Checking gear
         if check_gear:
             total_empty_sockets = 0
             missing_enchants = []
-            leg_info = {}
             for slot in sorted(items):
                 item = items[slot]
                 nb_empty_sockets, missing_enchant = self.check_item_enchants_and_gems(slot, item)
@@ -363,18 +360,18 @@ class CharactersExtractor:
 
             # specific to my characters
             STAT_ENCHANTS = {
-                "oxyde"   : ("versatility", "agi", "heavy hide"),
-                "ayonis"  : ("haste",       "int", "satyr"),
-                "oxyr"    : ("haste",       "agi", "satyr"),
-                "agoniss" : ("haste",       "int", "satyr"),
-                "palaniss": ("haste",       "str", "satyr"),
-                "odyxe"   : ("mastery",     "agi", "satyr"),
-                "kodyx"   : ("mastery",     "str", "satyr"),
-                "oxymus"  : ("haste",       "int", "satyr"),
-                "monxy"   : ("mastery",     "agi", "satyr"),
-                "oxgrom"  : ("haste",       "str", "satyr"),
-                "oxydhe"  : ("crit",        "agi", "satyr"),
-                "voxy"    : ("mastery",     "agi", "satyr"),
+                # "oxyde"   : ("versatility", "agi", "heavy hide"),
+                # "ayonis"  : ("haste",       "int", "satyr"),
+                # "oxyr"    : ("haste",       "agi", "satyr"),
+                # "agoniss" : ("haste",       "int", "satyr"),
+                # "palaniss": ("haste",       "str", "satyr"),
+                # "odyxe"   : ("mastery",     "agi", "satyr"),
+                # "kodyx"   : ("mastery",     "str", "satyr"),
+                # "oxymus"  : ("haste",       "int", "satyr"),
+                # "monxy"   : ("mastery",     "agi", "satyr"),
+                # "oxgrom"  : ("haste",       "str", "satyr"),
+                # "oxydhe"  : ("crit",        "agi", "satyr"),
+                # "voxy"    : ("mastery",     "agi", "satyr"),
             }
 
             to_fix = []
@@ -444,7 +441,7 @@ class CharactersExtractor:
                 logger.debug("Found %d empty socket(s)", nb_empty_sockets)
 
             #checking enchants
-            if slot in ["finger1", "finger2", "back", "neck"]:
+            if slot in ["finger1", "finger2", "mainHand"]:
                 if ("enchant") not in item_dict["tooltipParams"]:
                     logger.debug("Detected missing enchantment for this slot !")
                     missing_enchant = True
@@ -466,48 +463,16 @@ class CharactersExtractor:
             r.raise_for_status()
             obj = r.json()
             achievements = obj["achievements"]
-            quests = obj["quests"]
         except ValueError:
-            logger.warn("cannot retrieve achievements for %s/%s", server, name)
+            logger.warn("cannot retrieve achievements for %s/%s", char.server(), char.name())
 
         for ach_desc in self.achievements:
             ach_id = ach_desc["id"]
             title = ach_desc["title"]
-            if ach_id in STEPPED_ACHIEVEMENTS:
+            if ACHIEVEMENTS[ach_id]:
                 char.set_data(title, self.check_stepped_achievement(ach_desc, ach_id, achievements))
             else:
                 char.set_data(title, self.check_achievement(ach_desc, ach_id, achievements))
-
-        # 3rd relic
-        for relic_quest_id in (43412, 43425, 43409, 43415,
-                               43407, 43422, 43423, 43414,
-                               43420, 43418, 43359, 43424):
-            if relic_quest_id in quests:
-                char.set_data(H_3RD_RELIC, "OK")
-                break
-        else:
-            char.set_data(H_3RD_RELIC, "")
-
-        # all class order champions
-        count = 0
-        try:
-            crit_index = achievements["criteria"].index(33142)
-            count = achievements["criteriaQuantity"][crit_index]
-        except ValueError:
-            pass
-
-        char.set_data(H_CLASS_CHAMPIONS, "%d/9" % count)
-
-        # class mount
-        # http://fr.wowhead.com/item=142231/renes-putrefiees-de-vainqueur-couvepeste#english-comments
-        for mount_quest_id in (46207, 45770, 46337, 46178, 46089,
-                               45789, 46813, 46792, 45354,
-                               46243, 46350, 46319, 46334):
-            if mount_quest_id in quests:
-                char.set_data(H_CLASS_MOUNT, "OK")
-                break
-        else:
-            char.set_data(H_CLASS_MOUNT, "")
 
     def check_achievement(self, ach_desc, ach_id, char_achievements):
         """Check if achievement is completed (ie. one of its criterias is met)
@@ -573,10 +538,8 @@ class CharactersExtractor:
             obj = r.json()
             professions = obj["professions"]["primary"]
         except ValueError:
-            logger.warn("cannot retrieve professions for %s/%s", server, name)
+            logger.warn("cannot retrieve professions for %s/%s", char.server(), char.name())
 
-        char["profession 1"] = ""
-        char["profession 2"] = ""
         count = 0
         for profession in professions:
             count += 1
@@ -586,7 +549,7 @@ class CharactersExtractor:
         """Fetch details for the achievements to check"""
         print("======================================================")
         print("Fetching achievements details")
-        for a_id in ACHIEVEMENTS + STEPPED_ACHIEVEMENTS:
+        for a_id in ACHIEVEMENTS:
             url = BASE_ACHIEV_URL.format(apikey=self.bnet_key, id=a_id)
             logger.debug(url)
             r = requests.get(url)
@@ -642,7 +605,7 @@ class CharactersExtractor:
         Returns;
             (str array) the ordered headers
         """
-        fieldnames=[H_SERVER, H_NAME, H_ILVL, H_3RD_RELIC, self.get_achievement_title(A_POWER_UNBOUND)]
+        fieldnames=[H_SERVER, H_NAME, H_ILVL]
         for c in self.characters:
             for k in c.keys():
                 if k not in fieldnames:
@@ -673,13 +636,13 @@ class CharactersExtractor:
             line = []
             for f in fieldnames:
                 v = "%-" + str(widths[f]) + "s"
-                line.append(v % char[f])
+                line.append(v % (char[f] if (f in char) else ""))
             print((", ").join(line))
 
     def display_gear_to_fix(self):
         """Display gear to fix: missing gems or enchantments"""
         print("======================================================")
-        print("/!\ %d character(s) to fix!" % len(self.to_fix))
+        print("/!\\ %d character(s) to fix!" % len(self.to_fix))
         for c in self.to_fix:
             print ("%s: %s"%(c, ", ".join(self.to_fix[c])))
         print("---------------------------")
@@ -732,14 +695,14 @@ class CharactersExtractor:
             if char_index is not None:
                 g_row = values[char_index]
                 for i, h in enumerate(headers):
-                    if (h in fieldnames) and r[h] and ((i >= len(g_row)) or (r[h] != g_row[i])):
+                    if (h in fieldnames) and (h in r) and r[h] and ((i >= len(g_row)) or (r[h] != g_row[i])):
                         cell_id = "%s%d" %(column_letter(i), char_index+2)
                         update_data.append({
                             "values": [[r[h]]],
                             "range": SUMMARY+"!%s:%s"%(cell_id, cell_id),
                         })
             else:
-                line = [(r[h] if h in fieldnames else None) for h in headers]
+                line = [(r[h] if h in r else None) for h in headers]
                 values.append(line)
                 row_index = len(values)+1
                 update_data.append({
@@ -757,7 +720,7 @@ class CharactersExtractor:
         else:
             print("Nothing to update")
 
-    def save_in_google_sheets_v2(self, google_sheet_id, dry_run):
+    def save_extra_google_sheets(self, google_sheet_id, dry_run):
         """Save level and ilvl in Google Sheets in separated Sheets
 
         Args:
@@ -1086,7 +1049,7 @@ class SheetConnector:
                 g_headers_indexes[field] = len(g_headers)
 
         if(appended_headers):
-            range_name = "%s!%s1:Z1" % (sheetName, column_letter(len(g_headers_indexes) - len(appended_headers)))
+            range_name = "%s!%s1:AZ1" % (sheetName, column_letter(len(g_headers_indexes) - len(appended_headers)))
             logger.info("Adding headers in %s => %s", range_name, appended_headers)
 
             update_data = [{
@@ -1116,7 +1079,7 @@ class SheetConnector:
             spreadsheetId=self.spreadsheetId, range=rangeName).execute()
         return result.get('values', [])
 
-    def get_credentials(flags):
+    def get_credentials(self, flags=None):
         """Gets valid user credentials from storage.
 
         If nothing has been stored, or if the stored credentials are invalid,
