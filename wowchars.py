@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__version__="2.0"
+__version__="3.0"
 
 """
 TODO: remove hardcoded enchants / gems suggestions
@@ -12,8 +12,6 @@ TODO: add suboptions to --guild: min level, min ilvl
 TODO: [Google Sheets] colorize names with class colors ?
 TODO: [Google Sheets] header freeze + color?
 TODO: [Google Sheets] automatically add graph(s) ?
-TODO: migrate to WOW Community API to the new WOW Game Data API
-TODO: option to select another region (EU, KR, US, TW)
 """
 
 import requests
@@ -36,11 +34,12 @@ logger = logging.getLogger('wowchars')
 
 ####################
 # URLs
-BASE_CHAR_URL   = "https://eu.api.battle.net/wow/character/{server}/{name}?fields={fields}&apikey={apikey}"
-BASE_ACHIEV_URL = "https://eu.api.battle.net/wow/achievement/{id}?apikey={apikey}"
-BASE_ITEM_URL   = "https://eu.api.battle.net/wow/item/{id}{slash_context}?bl={bonus_list}&apikey={apikey}"
-CLASSES_URL     = "https://eu.api.battle.net/wow/data/character/classes?locale=en_GB&apikey={apikey}"
-GUILD_URL       = "https://eu.api.battle.net/wow/guild/{server}/{name}?fields={fields}&apikey={apikey}"
+TOKEN_URL       = "https://{zone}.battle.net/oauth/token"
+BASE_CHAR_URL   = "https://{zone}.api.blizzard.com/wow/character/{server}/{name}?fields={fields}&access_token={access_token}"
+BASE_ACHIEV_URL = "https://{zone}.api.blizzard.com/wow/achievement/{id}?access_token={access_token}"
+BASE_ITEM_URL   = "https://{zone}.api.blizzard.com/wow/item/{id}{slash_context}?bl={bonus_list}&access_token={access_token}"
+CLASSES_URL     = "https://{zone}.api.blizzard.com/wow/data/character/classes?locale=en_GB&access_token={access_token}"
+GUILD_URL       = "https://{zone}.api.blizzard.com/wow/guild/{server}/{name}?fields={fields}&access_token={access_token}"
 
 ####################
 # Headers
@@ -60,7 +59,8 @@ ACHIEVEMENTS = {
 
 def main():
     parser = argparse.ArgumentParser(parents=[tools.argparser])
-    parser.add_argument("-b", "--bnet-api-key", help="Key to Blizzard's Battle.net API", required=True)
+    parser.add_argument("--blizzard-client-id", help="Client ID of Blizzard's Battle.net API", required=True)
+    parser.add_argument("--blizzard-client-secret", help="Token to Blizzard's Battle.net API", required=True)
     parser.add_argument("-o", "--output", help="Output CSV file", required=False)
     parser.add_argument("-c", "--char", help="Check character (server:charname)", action="append", default=[], required=False)
     parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 111")
@@ -71,12 +71,15 @@ def main():
     parser.add_argument("-d", "--dry-run", action="store_true", help="does not update target output")
     parser.add_argument("--check-gear", action="store_true", help="inspect gear for legendaries or any missing gem/enchantment")
     parser.add_argument("--default-server", help="Default server when not given with the '-c' option", default=None)
+    parser.add_argument("--zone", choices=["eu", "us", "kr", "tw"], help="Select server's zone.", default="eu")
     parser.add_argument('--version', action='version', version=__version__)
     args = parser.parse_args()
 
     set_logger(args.verbosity)
 
-    ce = CharactersExtractor(args.bnet_api_key)
+    ce = CharactersExtractor(args.blizzard_client_id,
+                             args.blizzard_client_secret,
+                             args.zone)
     ce.run(args.guild,
            args.char,
            args.raid,
@@ -183,13 +186,25 @@ class CharactersExtractor:
     - extract and process data from Blizzard API
     - save in CSV and/or export to a Google Sheets document"""
 
-    def __init__(self, bnet_api_key):
+    def __init__(self, client_id, client_secret, zone):
         """Contructor
 
         Args:
-            bnet_api_key (str): Battle.net API key
+            client_id (str): Blizzard client ID
+            client_secret (str): Blizzard client secret
+            zone (str): Zone of the target guild and/or characters
         """
-        self.bnet_key = bnet_api_key
+
+        # getting auth token
+        url = TOKEN_URL.format(zone=zone)
+        logger.debug(url)
+        r = requests.post(url, data={"grant_type":"client_credentials"},
+                          auth=(client_id, client_secret))
+        r.raise_for_status()
+
+        self.access_token = r.json()["access_token"]
+        logger.debug("Got access token: ")
+        self.zone = zone
         self.achievements = [] # achievement details
         self.characters = []   # fetched characters
         self.to_fix = {}       # {char, [to fix]}
@@ -272,7 +287,7 @@ class CharactersExtractor:
                 server = "voljin"
             name = serv_and_guildname
 
-        url = GUILD_URL.format(apikey=self.bnet_key, server=server, name=name, fields="members")
+        url = GUILD_URL.format(zone=self.zone, access_token=self.access_token, server=server, name=name, fields="members")
         logger.debug(url)
         r = requests.get(url)
         r.raise_for_status()
@@ -337,7 +352,7 @@ class CharactersExtractor:
             char (CharInfo): the character to fetch
             check_gear (bool): check gear for any missing gem or enchantment
         """
-        url = BASE_CHAR_URL.format(apikey=self.bnet_key, server=char.server(), name=char.name(), fields="items")
+        url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="items")
         logger.debug(url)
         r = requests.get(url)
         r.raise_for_status()
@@ -424,7 +439,7 @@ class CharactersExtractor:
         #getting full item description
         try:
             #logger.debug(item_dict)
-            url = BASE_ITEM_URL.format(apikey=self.bnet_key, id=item_id,
+            url = BASE_ITEM_URL.format(zone=self.zone, access_token=self.access_token, id=item_id,
                                        slash_context=context,
                                        bonus_list=bonus_list)
             logger.debug(url)
@@ -457,7 +472,7 @@ class CharactersExtractor:
             char (CharInfo): the character to fetch
         """
         try:
-            url = BASE_CHAR_URL.format(apikey=self.bnet_key, server=char.server(), name=char.name(), fields="achievements,quests")
+            url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="achievements,quests")
             logger.debug(url)
             r = requests.get(url)
             r.raise_for_status()
@@ -531,7 +546,7 @@ class CharactersExtractor:
             char (CharInfo): the character to fetch
         """
         try:
-            url = BASE_CHAR_URL.format(apikey=self.bnet_key, server=char.server(), name=char.name(), fields="professions")
+            url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="professions")
             logger.debug(url)
             r = requests.get(url)
             r.raise_for_status()
@@ -550,7 +565,7 @@ class CharactersExtractor:
         print("======================================================")
         print("Fetching achievements details")
         for a_id in ACHIEVEMENTS:
-            url = BASE_ACHIEV_URL.format(apikey=self.bnet_key, id=a_id)
+            url = BASE_ACHIEV_URL.format(zone=self.zone, access_token=self.access_token, id=a_id)
             logger.debug(url)
             r = requests.get(url)
             r.raise_for_status()
@@ -562,7 +577,7 @@ class CharactersExtractor:
         """Fetch the 'class id' to 'name' mapping"""
         print("======================================================")
         print("Fetching classes")
-        url = CLASSES_URL.format(apikey=self.bnet_key)
+        url = CLASSES_URL.format(zone=self.zone, access_token=self.access_token)
         logger.debug(url)
         r = requests.get(url)
         r.raise_for_status()
