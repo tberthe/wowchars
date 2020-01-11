@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "3.1.1"
+__version__ = "3.1.2"
 
 """
 TODO: remove hardcoded enchants / gems suggestions
@@ -49,6 +49,7 @@ H_NAME        = "name"
 H_CLASS       = "class"
 H_LVL         = "level"
 H_ILVL        = "ilvl"
+H_AZERITE_LVL = "Azerite lvl"
 
 ####################
 # Achievements: {ID: stepped}
@@ -340,7 +341,7 @@ class CharactersExtractor:
             if not raid:
                 self.fetch_char_achievements(char)
                 self.fetch_char_professions(char)
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, requests.exceptions.HTTPError):
             logger.error("cannot fetch %s/%s", server, name)
             return
         self.characters.append(char)
