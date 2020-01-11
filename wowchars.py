@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "3.1"
+__version__ = "3.1.1"
 
 """
 TODO: remove hardcoded enchants / gems suggestions
@@ -103,7 +103,7 @@ class CharInfo(dict):
             server (str): server of the character
             name (str): name of the character
         """
-        super(dict, self).__init__()
+        super().__init__()
         self[H_SERVER] = server
         self[H_NAME] = name
 
@@ -198,17 +198,17 @@ class CharactersExtractor:
         # getting auth token
         url = TOKEN_URL.format(zone=zone)
         logger.debug(url)
-        r = requests.post(url, data={"grant_type":"client_credentials"},
+        r = requests.post(url, data={"grant_type": "client_credentials"},
                           auth=(client_id, client_secret))
         r.raise_for_status()
 
         self.access_token = r.json()["access_token"]
-        logger.debug("Got access token: ")
+        logger.debug("Got access token: %s", self.access_token)
         self.zone = zone
-        self.achievements = [] # achievement details
-        self.characters = []   # fetched characters
-        self.to_fix = {}       # {char, [to fix]}
-        self.classnames = {}   # {id, classname}
+        self.achievements = []  # achievement details
+        self.characters = []    # fetched characters
+        self.to_fix = {}        # {char, [to fix]}
+        self.classnames = {}    # {id, classname}
 
     def run(self, guild, chars, raid, csv_output, summary,
             check_gear, google_sheet_id, dry_run,
@@ -297,10 +297,10 @@ class CharactersExtractor:
             charname = m["character"]["name"]
             level = m["character"]["level"]
             realm = m["character"]["realm"]
-            logger.debug("%3d %s" %(level, charname))
+            logger.debug("%3d %s" % (level, charname))
             if level >= 111:
-                logger.info("Found valid character: %3d %s" %(level, charname))
-                guild_chars.append("%s:%s"%(realm, charname))
+                logger.info("Found valid character: %3d %s" % (level, charname))
+                guild_chars.append("%s:%s" % (realm, charname))
         return guild_chars
 
     def fetch_char(self, serv_and_name, default_server=None, raid=False,
@@ -361,6 +361,11 @@ class CharactersExtractor:
         char.set_data(H_LVL, str(char_json[H_LVL]))
         items = char_json["items"]
         char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
+        try:
+            char.set_data(H_AZERITE_LVL, str(items["neck"]["azeriteItem"]["azeriteLevel"]))
+        except (ValueError, KeyError):
+            logger.warn("Cannot find azerite level.")
+            char.set_data(H_AZERITE_LVL, "0")
 
         # Checking gear
         if check_gear:
@@ -436,9 +441,9 @@ class CharactersExtractor:
         bonus_list = ",".join([str(b) for b in item_dict["bonusLists"]])
         nb_empty_sockets = 0
         missing_enchant = False
-        #getting full item description
+        # getting full item description
         try:
-            #logger.debug(item_dict)
+            # logger.debug(item_dict)
             url = BASE_ITEM_URL.format(zone=self.zone, access_token=self.access_token, id=item_id,
                                        slash_context=context,
                                        bonus_list=bonus_list)
@@ -447,7 +452,7 @@ class CharactersExtractor:
             r.raise_for_status()
             item = r.json()
 
-            #checking gem slots & checking with current item state
+            # checking gem slots & checking with current item state
             nb_sockets = len(item["socketInfo"]) if "socketInfo" in item else 0
             for i in range(nb_sockets):
                 if ("gem%d"%i) not in item_dict["tooltipParams"]:
@@ -455,7 +460,7 @@ class CharactersExtractor:
             if nb_empty_sockets:
                 logger.debug("Found %d empty socket(s)", nb_empty_sockets)
 
-            #checking enchants
+            # checking enchants
             if slot in ["finger1", "finger2", "mainHand"]:
                 if ("enchant") not in item_dict["tooltipParams"]:
                     logger.debug("Detected missing enchantment for this slot !")
@@ -540,7 +545,7 @@ class CharactersExtractor:
         return "%d/%d%s" % (count, len(ach_desc["criteria"]), next_step)
 
     def fetch_char_professions(self, char):
-        """Fetch and fill professions
+        """Fetch and fill BfA professions
 
         Args:
             char (CharInfo): the character to fetch
@@ -557,8 +562,9 @@ class CharactersExtractor:
 
         count = 0
         for profession in professions:
+            if profession["name"].startswith("Kul Tiran"):
             count += 1
-            char.set_data("profession %d"%count, "%3d: %s" % (profession["rank"], profession["name"]))
+                char.set_data("BfA profession %d" % count, "%s: %d" % (profession["name"].replace("Kul Tiran", "BfA"), profession["rank"]))
 
     def fetch_achievements_details(self):
         """Fetch details for the achievements to check"""
@@ -620,7 +626,7 @@ class CharactersExtractor:
         Returns;
             (str array) the ordered headers
         """
-        fieldnames=[H_SERVER, H_NAME, H_ILVL]
+        fieldnames = [H_SERVER, H_NAME, H_CLASS, H_ILVL, H_LVL]
         for c in self.characters:
             for k in c.keys():
                 if k not in fieldnames:
@@ -632,21 +638,21 @@ class CharactersExtractor:
         print("======================================================")
         print("Fetched %d character(s)" % len(self.characters))
         fieldnames = self.get_ordered_fieldnames()
-        #computing width of each column
+        # computing width of each column
         widths = {f:len(f) for f in fieldnames}
         for f in fieldnames:
             for char in self.characters:
                 if f in char:
                     widths[f] = max(widths[f], len(str(char[f])))
 
-        #printing fieldnames
+        # printing fieldnames
         line = []
         for f in fieldnames:
             v = "%-" + str(widths[f]) + "s"
             line.append(v % f)
         print((", ").join(line))
 
-        #printing rows
+        # printing rows
         for char in sorted(self.characters, key=lambda x:x[H_ILVL], reverse=True):
             line = []
             for f in fieldnames:
@@ -659,7 +665,7 @@ class CharactersExtractor:
         print("======================================================")
         print("/!\\ %d character(s) to fix!" % len(self.to_fix))
         for c in self.to_fix:
-            print ("%s: %s"%(c, ", ".join(self.to_fix[c])))
+            print("%s: %s" % (c, ", ".join(self.to_fix[c])))
         print("---------------------------")
         to_create = {}
         for c in self.to_fix:
@@ -692,14 +698,14 @@ class CharactersExtractor:
 
         sheet_values = sc.get_values(SUMMARY+"!A:Z")
         headers = sheet_values[0]
-        h_indexes = {h:i for i, h in enumerate(headers)}
+        h_indexes = {h: i for i, h in enumerate(headers)}
         values = sheet_values[1:]
 
         update_data = []  # cell values to update
         to_colorize = []  # cells to colorize (when adding new character(s))
 
         # updating / adding characters info
-        for r in sorted(self.characters, key=lambda x:x[H_ILVL], reverse=True):
+        for r in sorted(self.characters, key=lambda x: x[H_ILVL], reverse=True):
             char_index = None
             # checking if character is already known
             for i, g_line in enumerate(values):
@@ -711,7 +717,7 @@ class CharactersExtractor:
                 g_row = values[char_index]
                 for i, h in enumerate(headers):
                     if (h in fieldnames) and (h in r) and r[h] and ((i >= len(g_row)) or (r[h] != g_row[i])):
-                        cell_id = "%s%d" %(column_letter(i), char_index+2)
+                        cell_id = "%s%d" % (column_letter(i), char_index+2)
                         update_data.append({
                             "values": [[r[h]]],
                             "range": SUMMARY+"!%s:%s"%(cell_id, cell_id),
@@ -746,7 +752,7 @@ class CharactersExtractor:
         print("Synching ilvl/level in Google Sheets")
 
         sc = SheetConnector(google_sheet_id, dry_run)
-        names = [ r[H_NAME] for r in sorted(self.characters, key=lambda x:x[H_NAME])]
+        names = [r[H_NAME] for r in sorted(self.characters, key=lambda x:x[H_NAME])]
 
         update_data = []
         today = strftime("%Y-%m-%d")
@@ -1082,7 +1088,7 @@ class SheetConnector:
         body = { "data": update_data, "value_input_option": "USER_ENTERED" }
         logger.info("%sUpdating data in Google sheets: %s", ("DRYRUN: " if self.dry_run else ""), update_data)
         if not self.dry_run:
-            response = self.service.spreadsheets().values().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
+            self.service.spreadsheets().values().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
     def get_values(self, rangeName):
         """Get values
