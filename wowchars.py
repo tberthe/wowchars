@@ -381,7 +381,6 @@ class CharactersExtractor:
             back_item = items["back"]
             if back_item["id"] != 169223:
                 raise ValueError("Item is not Ashjra’kamas: %s", back_item["name"])
-            print(items["back"])
             char.set_data(H_ASHJRA_KAMAS, back_item["quality"])
         except (ValueError, KeyError):
             logging.warn("Cannot find 'Ashjra’kamas'.")
