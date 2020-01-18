@@ -17,20 +17,16 @@ TODO: [Google Sheets] automatically add graph(s) ?
 import requests
 import csv
 import argparse
-import re
 import logging
 import httplib2
 import os
 import string
 from time import strftime
 
-import googleapiclient
 from apiclient import discovery
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
-
-logger = logging.getLogger('wowchars')
 
 ####################
 # URLs
@@ -53,8 +49,8 @@ H_AZERITE_LVL = "Azerite lvl"
 
 ####################
 # Achievements: {ID: stepped}
-ACHIEVEMENTS = { 
-    #11609: False,  # POWER_UNBOUND
+ACHIEVEMENTS = {
+    # 11609: False,  # POWER_UNBOUND
 }
 
 
@@ -156,9 +152,14 @@ class CharInfo(dict):
             value (str): value of the info
         """
         self[key] = value
-        logger.info("%s: %s", key, value)
+        logging.info("%s: %s", key, value)
 
     def get_hex_color(self):
+        """Get the color according to the character's class.
+
+        Returns:
+            (string) the hex code
+        """
         COLOR_DICT = {
             "Druid": "#FF7D0A",
             "Warlock": "#9482C9",
@@ -176,9 +177,9 @@ class CharInfo(dict):
         if self.classname() in COLOR_DICT:
             return COLOR_DICT[self.classname()]
         elif self.classname():
-            logger.error("Color not found for class '%s'" % self.classname())
+            logging.error("Color not found for class '%s'" % self.classname())
         else:
-            logger.error("Classname not set when requiring color")
+            logging.error("Classname not set when requiring color")
         return "#FFFFFF"
 
 
@@ -198,13 +199,13 @@ class CharactersExtractor:
 
         # getting auth token
         url = TOKEN_URL.format(zone=zone)
-        logger.debug(url)
+        logging.debug(url)
         r = requests.post(url, data={"grant_type": "client_credentials"},
                           auth=(client_id, client_secret))
         r.raise_for_status()
 
         self.access_token = r.json()["access_token"]
-        logger.debug("Got access token: %s", self.access_token)
+        logging.debug("Got access token: %s", self.access_token)
         self.zone = zone
         self.achievements = []  # achievement details
         self.characters = []    # fetched characters
@@ -281,26 +282,28 @@ class CharactersExtractor:
             server, name = serv_and_guildname.split(":")
         except ValueError:
             if default_server:
-                logger.info("no server name, using default server '%s'", default_server)
+                logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logger.warn("no server name, using default server 'voljin'")
+                logging.warn("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_guildname
 
         url = GUILD_URL.format(zone=self.zone, access_token=self.access_token, server=server, name=name, fields="members")
-        logger.debug(url)
+        logging.debug(url)
         r = requests.get(url)
         r.raise_for_status()
-        members = r.json()["members"]
+        body = r.json()
+        logging.trace(body)
+        members = ["members"]
         guild_chars = []
         for m in members:
             charname = m["character"]["name"]
             level = m["character"]["level"]
             realm = m["character"]["realm"]
-            logger.debug("%3d %s" % (level, charname))
+            logging.debug("%3d %s" % (level, charname))
             if level >= 111:
-                logger.info("Found valid character: %3d %s" % (level, charname))
+                logging.info("Found valid character: %3d %s" % (level, charname))
                 guild_chars.append("%s:%s" % (realm, charname))
         return guild_chars
 
@@ -324,15 +327,15 @@ class CharactersExtractor:
             server, name = serv_and_name.split(":")
         except ValueError:
             if default_server:
-                logger.info("no server name, using default server '%s'", default_server)
+                logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logger.warn("no server name, using default server 'voljin'")
+                logging.warn("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_name
 
         if self.get_known_char(server, name):
-            logger.warn("character '%s' already processed" % (serv_and_name))
+            logging.warn("character '%s' already processed" % (serv_and_name))
             return
 
         char = CharInfo(server, name)
@@ -342,7 +345,7 @@ class CharactersExtractor:
                 self.fetch_char_achievements(char)
                 self.fetch_char_professions(char)
         except (ValueError, KeyError, requests.exceptions.HTTPError):
-            logger.error("cannot fetch %s/%s", server, name)
+            logging.error("cannot fetch %s/%s", server, name)
             return
         self.characters.append(char)
 
@@ -354,18 +357,20 @@ class CharactersExtractor:
             check_gear (bool): check gear for any missing gem or enchantment
         """
         url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="items")
-        logger.debug(url)
+        logging.debug(url)
         r = requests.get(url)
         r.raise_for_status()
         char_json = r.json()
+        logging.trace(char_json)
         char.set_data(H_CLASS, self.classnames[char_json[H_CLASS]])
         char.set_data(H_LVL, str(char_json[H_LVL]))
         items = char_json["items"]
         char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
+        # Searching the 'azeriteLevel' of the item in the neck slot
         try:
             char.set_data(H_AZERITE_LVL, str(items["neck"]["azeriteItem"]["azeriteLevel"]))
         except (ValueError, KeyError):
-            logger.warn("Cannot find azerite level.")
+            logging.warn("Cannot find azerite level.")
             char.set_data(H_AZERITE_LVL, "0")
 
         # Checking gear
@@ -400,7 +405,7 @@ class CharactersExtractor:
                 if char.name() in STAT_ENCHANTS:
                     to_fix.extend(["gem " + STAT_ENCHANTS[char.name()][0] for i in range(total_empty_sockets)])
                 else:
-                    to_fix.append("%d gem(s)"%total_empty_sockets)
+                    to_fix.append("%d gem(s)" % total_empty_sockets)
             for m in missing_enchants:
                 if char.name() in STAT_ENCHANTS:
                     if "finger" in m:
@@ -415,7 +420,7 @@ class CharactersExtractor:
                     to_fix.append("enchant " + m)
 
             if to_fix:
-                self.to_fix["%s-%s"%(char.name(), char.server())] = to_fix
+                self.to_fix["%s-%s" % (char.name(), char.server())] = to_fix
 
     def check_item_enchants_and_gems(self, slot, item_dict):
         """Check any missing enchant or gem in the given item
@@ -431,7 +436,7 @@ class CharactersExtractor:
         """
         if not isinstance(item_dict, dict) or "id" not in item_dict:
             return 0, False
-        logger.debug("Checking enchants and gems of slot: %s", slot)
+        logging.debug("Checking enchants and gems of slot: %s", slot)
         item_id = item_dict["id"]
         context = item_dict["context"]
         # Some contexts seem to be invalid in the API, so we do not use them
@@ -444,30 +449,30 @@ class CharactersExtractor:
         missing_enchant = False
         # getting full item description
         try:
-            # logger.debug(item_dict)
+            # logging.debug(item_dict)
             url = BASE_ITEM_URL.format(zone=self.zone, access_token=self.access_token, id=item_id,
                                        slash_context=context,
                                        bonus_list=bonus_list)
-            logger.debug(url)
+            logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
             item = r.json()
-
+            logging.trace(item)
             # checking gem slots & checking with current item state
             nb_sockets = len(item["socketInfo"]) if "socketInfo" in item else 0
             for i in range(nb_sockets):
-                if ("gem%d"%i) not in item_dict["tooltipParams"]:
-                   nb_empty_sockets += 1
+                if ("gem%d" % i) not in item_dict["tooltipParams"]:
+                    nb_empty_sockets += 1
             if nb_empty_sockets:
-                logger.debug("Found %d empty socket(s)", nb_empty_sockets)
+                logging.debug("Found %d empty socket(s)", nb_empty_sockets)
 
             # checking enchants
             if slot in ["finger1", "finger2", "mainHand"]:
                 if ("enchant") not in item_dict["tooltipParams"]:
-                    logger.debug("Detected missing enchantment for this slot !")
+                    logging.debug("Detected missing enchantment for this slot !")
                     missing_enchant = True
         except ValueError:
-            logger.error("cannot get full item description for %s", item_id)
+            logging.error("cannot get full item description for %s", item_id)
 
         return nb_empty_sockets, missing_enchant
 
@@ -479,13 +484,14 @@ class CharactersExtractor:
         """
         try:
             url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="achievements,quests")
-            logger.debug(url)
+            logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
             obj = r.json()
+            logging.trace(obj)
             achievements = obj["achievements"]
         except ValueError:
-            logger.warn("cannot retrieve achievements for %s/%s", char.server(), char.name())
+            logging.warn("cannot retrieve achievements for %s/%s", char.server(), char.name())
 
         for ach_desc in self.achievements:
             ach_id = ach_desc["id"]
@@ -508,7 +514,7 @@ class CharactersExtractor:
         """
         ach_ok = False
         if ach_id in char_achievements["achievementsCompleted"]:
-            logger.debug("char has ach: %s", ach_desc)
+            logging.debug("char has ach: %s", ach_desc)
             for criteria in ach_desc["criteria"]:
                 crit_ok = False
                 try:
@@ -518,7 +524,7 @@ class CharactersExtractor:
                         crit_ok = True
                 except ValueError:
                     pass
-                logger.debug("Criteria %s ==> %s", criteria, crit_ok)
+                logging.debug("Criteria %s ==> %s", criteria, crit_ok)
         return "OK" if ach_ok else ""
 
     def check_stepped_achievement(self, ach_desc, ach_id, char_achievements):
@@ -535,13 +541,13 @@ class CharactersExtractor:
         count = 0
         next_step = ""
         if ach_id in char_achievements["achievementsCompleted"]:
-            logger.debug("char has ach: %s", ach_desc)
+            logging.debug("char has ach: %s", ach_desc)
             for criteria in ach_desc["criteria"]:
                 if criteria["id"] in char_achievements["criteria"]:
-                    logger.debug("Criteria '%s' ==> OK", criteria["description"])
+                    logging.debug("Criteria '%s' ==> OK", criteria["description"])
                     count += 1
                 else:
-                    logger.debug("Criteria '%s' ==> NOK", criteria["description"])
+                    logging.debug("Criteria '%s' ==> NOK", criteria["description"])
                     next_step = (": " + criteria["description"]) if not next_step else next_step
         return "%d/%d%s" % (count, len(ach_desc["criteria"]), next_step)
 
@@ -553,18 +559,19 @@ class CharactersExtractor:
         """
         try:
             url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="professions")
-            logger.debug(url)
+            logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
             obj = r.json()
+            logging.trace(obj)
             professions = obj["professions"]["primary"]
         except ValueError:
-            logger.warn("cannot retrieve professions for %s/%s", char.server(), char.name())
+            logging.warn("cannot retrieve professions for %s/%s", char.server(), char.name())
 
         count = 0
         for profession in professions:
             if profession["name"].startswith("Kul Tiran"):
-            count += 1
+                count += 1
                 char.set_data("BfA profession %d" % count, "%s: %d" % (profession["name"].replace("Kul Tiran", "BfA"), profession["rank"]))
 
     def fetch_achievements_details(self):
@@ -573,11 +580,12 @@ class CharactersExtractor:
         print("Fetching achievements details")
         for a_id in ACHIEVEMENTS:
             url = BASE_ACHIEV_URL.format(zone=self.zone, access_token=self.access_token, id=a_id)
-            logger.debug(url)
+            logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
             ach = r.json()
-            logger.info("%6d: %s", ach["id"], ach["title"])
+            logging.trace(ach)
+            logging.info("%6d: %s", ach["id"], ach["title"])
             self.achievements.append(ach)
 
     def fetch_classes(self):
@@ -585,15 +593,17 @@ class CharactersExtractor:
         print("======================================================")
         print("Fetching classes")
         url = CLASSES_URL.format(zone=self.zone, access_token=self.access_token)
-        logger.debug(url)
+        logging.debug(url)
         r = requests.get(url)
         r.raise_for_status()
-        classes = r.json()["classes"]
+        body = r.json()
+        logging.trace(body)
+        classes = body["classes"]
         for c in classes:
             cid = int(c["id"])
             name = c["name"]
             self.classnames[cid] = name
-            logger.info("%2d: %s", cid, name)
+            logging.info("%2d: %s", cid, name)
 
     def get_achievement_title(self, ach_id):
         """Get name of a known achievement
@@ -607,7 +617,7 @@ class CharactersExtractor:
         for a in self.achievements:
             if ach_id == a["id"]:
                 return a["title"]
-        raise ValueError("Cannot retrieve achievement %d"%ach_id)
+        raise ValueError("Cannot retrieve achievement %d" % ach_id)
 
     def save_csv(self, output_file):
         """Save the results in a CSV file
@@ -640,7 +650,7 @@ class CharactersExtractor:
         print("Fetched %d character(s)" % len(self.characters))
         fieldnames = self.get_ordered_fieldnames()
         # computing width of each column
-        widths = {f:len(f) for f in fieldnames}
+        widths = {f: len(f) for f in fieldnames}
         for f in fieldnames:
             for char in self.characters:
                 if f in char:
@@ -654,7 +664,7 @@ class CharactersExtractor:
         print((", ").join(line))
 
         # printing rows
-        for char in sorted(self.characters, key=lambda x:x[H_ILVL], reverse=True):
+        for char in sorted(self.characters, key=lambda x: x[H_ILVL], reverse=True):
             line = []
             for f in fieldnames:
                 v = "%-" + str(widths[f]) + "s"
@@ -697,7 +707,7 @@ class CharactersExtractor:
         fieldnames = self.get_ordered_fieldnames()
         sc.ensure_headers(SUMMARY, fieldnames)
 
-        sheet_values = sc.get_values(SUMMARY+"!A:Z")
+        sheet_values = sc.get_values(SUMMARY + "!A:Z")
         headers = sheet_values[0]
         h_indexes = {h: i for i, h in enumerate(headers)}
         values = sheet_values[1:]
@@ -718,18 +728,18 @@ class CharactersExtractor:
                 g_row = values[char_index]
                 for i, h in enumerate(headers):
                     if (h in fieldnames) and (h in r) and r[h] and ((i >= len(g_row)) or (r[h] != g_row[i])):
-                        cell_id = "%s%d" % (column_letter(i), char_index+2)
+                        cell_id = "%s%d" % (column_letter(i), char_index + 2)
                         update_data.append({
                             "values": [[r[h]]],
-                            "range": SUMMARY+"!%s:%s"%(cell_id, cell_id),
+                            "range": SUMMARY + "!%s:%s" % (cell_id, cell_id),
                         })
             else:
                 line = [(r[h] if h in r else None) for h in headers]
                 values.append(line)
-                row_index = len(values)+1
+                row_index = len(values) + 1
                 update_data.append({
                     "values": [line],
-                    "range": SUMMARY+"!A{row}:Z{row}".format(row=row_index),
+                    "range": SUMMARY + "!A{row}:Z{row}".format(row=row_index),
                 })
                 to_colorize.append((h_indexes[H_NAME], row_index, r.get_hex_color()))
 
@@ -759,11 +769,11 @@ class CharactersExtractor:
         today = strftime("%Y-%m-%d")
 
         for s in [H_LVL, H_ILVL]:
-            v_dict = {r[H_NAME]:r[s] for r in sorted(self.characters, key=lambda x:x[H_NAME])}
-            sc.ensure_headers(s, [H_DATE]+names)
-            sheet_values = sc.get_values("%s!A:Z"%s)
+            v_dict = {r[H_NAME]: r[s] for r in sorted(self.characters, key=lambda x: x[H_NAME])}
+            sc.ensure_headers(s, [H_DATE] + names)
+            sheet_values = sc.get_values("%s!A:Z" % s)
             headers = sheet_values[0]
-            h_indexes = {h:i for i, h in enumerate(headers)}
+            h_indexes = {h: i for i, h in enumerate(headers)}
             update_needed = False
             last_update_today = (len(sheet_values) > 1) and (sheet_values[-1][h_indexes[H_DATE]] == today)
             if len(sheet_values) <= 1:
@@ -789,7 +799,7 @@ class CharactersExtractor:
             for i, h in enumerate(headers):
                 if h in v_dict:
                     if len(line) <= i:
-                        line += [None] * (i+1-len(line))
+                        line += [None] * (i + 1 - len(line))
                     line[i] = v_dict[h]
             line[h_indexes[H_DATE]] = today
 
@@ -808,26 +818,42 @@ class CharactersExtractor:
             print("Nothing to update")
 
 
+def install_trace_logger():
+    if install_trace_logger.trace_installed:
+        return
+    level = logging.TRACE = logging.DEBUG - 5
+
+    def log_logger(self, message, *args, **kwargs):
+        if self.isEnabledFor(level):
+            self._log(level, message, args, **kwargs)
+    logging.getLoggerClass().trace = log_logger
+
+    def log_root(msg, *args, **kwargs):
+        logging.log(level, msg, *args, **kwargs)
+    logging.addLevelName(level, "TRACE")
+    logging.trace = log_root
+    install_trace_logger.trace_installed = True
+
+
+install_trace_logger.trace_installed = False
+
+
 def set_logger(verbosity):
     """Initialize and set the logger
 
     Args:
-        verbosity (int): 0 -> default, 1 -> info, 2 -> debug
+        verbosity (int): 0 -> default, 1 -> info, 2 -> debug, 3 -> trace
     """
     log_level = logging.WARNING - (verbosity * 10)
-    logger.setLevel(log_level)
-    # create console handler and set level to debug
-    ch = logging.StreamHandler()
-    ch.setLevel(log_level)
-    # create formatter
-    formatter = logging.Formatter('[%(levelname)s] %(message)s')
 
-    # add formatter to ch
-    ch.setFormatter(formatter)
-
-    # add ch to logger
-    logger.addHandler(ch)
-    # logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.WARNING - (self.args.verbosity * 10))
+    logging.basicConfig(
+        level=log_level,
+        format="[%(levelname)s] %(message)s",
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
+    install_trace_logger()
 
 
 def column_letter(index):
@@ -845,7 +871,7 @@ def column_letter(index):
     while True:
         j = i % len(string.ascii_uppercase)
         res = string.ascii_uppercase[j] + res
-        i = (i-j) // len(string.ascii_uppercase) - 1
+        i = (i - j) // len(string.ascii_uppercase) - 1
         if i < 0:
             break
     return res
@@ -865,7 +891,7 @@ def column_index(column_str):
     mult = 1
     for l in column_str[-2::-1]:
         mult *= len(string.ascii_uppercase)
-        res += (1+string.ascii_uppercase.index(l)) * mult
+        res += (1 + string.ascii_uppercase.index(l)) * mult
     return res
 
 
@@ -926,7 +952,7 @@ class RGBColor:
             a RGBColor object
         """
         h = hex_code.lstrip('#')
-        rgb = tuple(int(h[i:i+2], 16) for i in (0, 2 ,4))
+        rgb = tuple(int(h[i: i + 2], 16) for i in (0, 2, 4))
         return fgbc(rgb[0], rgb[1], rgb[2])
 
     def to_hex(self):
@@ -973,7 +999,7 @@ class SheetConnector:
         discoveryUrl = ('https://sheets.googleapis.com/$discovery/rest?'
                         'version=v4')
         self.service = discovery.build('sheets', 'v4', http=http,
-                                  discoveryServiceUrl=discoveryUrl)
+                                       discoveryServiceUrl=discoveryUrl)
 
         self.spreadsheetId = sheet_id
 
@@ -987,24 +1013,24 @@ class SheetConnector:
             return
 
         body = {
-          "requests": [
-            {
-              "addSheet": {
-                "properties": {
-                  "title": sheetName,
-                  # "gridProperties": {
-                  #   "rowCount": 20,
-                  #   "columnCount": 12
-                  # },
-                  # "tabColor": {
-                  #   "red": 1.0,
-                  #   "green": 0.3,
-                  #   "blue": 0.4
-                  # }
+            "requests": [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "title": sheetName,
+                            # "gridProperties": {
+                            #   "rowCount": 20,
+                            #   "columnCount": 12
+                            # },
+                            # "tabColor": {
+                            #   "red": 1.0,
+                            #   "green": 0.3,
+                            #   "blue": 0.4
+                            # }
+                        }
+                    }
                 }
-              }
-            }
-          ]
+            ]
         }
         self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
@@ -1027,13 +1053,13 @@ class SheetConnector:
             return
 
         body = {
-          "requests": [
-            {
-              "deleteSheet": {
-                "sheetId": sheets[sheetName]
-              }
-            }
-          ]
+            "requests": [
+                {
+                    "deleteSheet": {
+                        "sheetId": sheets[sheetName]
+                    }
+                }
+            ]
         }
         self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
@@ -1045,7 +1071,7 @@ class SheetConnector:
         """
         sheet_metadata = self.service.spreadsheets().get(spreadsheetId=self.spreadsheetId).execute()
         sheets = sheet_metadata.get('sheets', '')
-        return {s["properties"]["title"]:s["properties"]["sheetId"] for s in sheets}
+        return {s["properties"]["title"]: s["properties"]["sheetId"] for s in sheets}
 
     def ensure_headers(self, sheetName, fieldnames):
         """Ensure the sheet exists and contains the specified headers
@@ -1055,13 +1081,13 @@ class SheetConnector:
             sheetName (str array): headers to check
         """
         self.check_or_create_sheet(sheetName)
-        values = self.get_values(sheetName+"!1:1")
+        values = self.get_values(sheetName + "!1:1")
         g_headers = values[0] if values else []
 
         appended_headers = []
 
         # building indexes map and adding extra headers
-        g_headers_indexes = {g_h:i for i, g_h in enumerate(g_headers)}
+        g_headers_indexes = {g_h: i for i, g_h in enumerate(g_headers)}
         for field in fieldnames:
             try:
                 g_headers_indexes[field] = g_headers.index(field)
@@ -1072,7 +1098,7 @@ class SheetConnector:
 
         if(appended_headers):
             range_name = "%s!%s1:AZ1" % (sheetName, column_letter(len(g_headers_indexes) - len(appended_headers)))
-            logger.info("Adding headers in %s => %s", range_name, appended_headers)
+            logging.info("Adding headers in %s => %s", range_name, appended_headers)
 
             update_data = [{
                 "values": [appended_headers],
@@ -1086,8 +1112,8 @@ class SheetConnector:
         Args:
             update_data (array): data to update, ex: [{"values": [["val1", "val2"]], "range": "sheet2!A2:B2"}]
         """
-        body = { "data": update_data, "value_input_option": "USER_ENTERED" }
-        logger.info("%sUpdating data in Google sheets: %s", ("DRYRUN: " if self.dry_run else ""), update_data)
+        body = {"data": update_data, "value_input_option": "USER_ENTERED"}
+        logging.info("%sUpdating data in Google sheets: %s", ("DRYRUN: " if self.dry_run else ""), update_data)
         if not self.dry_run:
             self.service.spreadsheets().values().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
@@ -1124,7 +1150,7 @@ class SheetConnector:
             flow.user_agent = APPLICATION_NAME
             if flags:
                 credentials = tools.run_flow(flow, store, flags)
-            else: # Needed only for compatibility with Python 2.6
+            else:  # Needed only for compatibility with Python 2.6
                 credentials = tools.run(flow, store)
             print('Storing credentials to ' + credential_path)
         return credentials
@@ -1154,25 +1180,25 @@ class SheetConnector:
         sheets = self.get_sheets()
 
         body = {
-          "requests": [
-            {
-              "repeatCell": {
-                "range": {
-                  "sheetId": sheets[sheet_name],
-                  "startRowIndex": row-1,
-                  "endRowIndex": row,
-                  "startColumnIndex": col_i,
-                  "endColumnIndex": col_i+1
+            "requests": [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheets[sheet_name],
+                            "startRowIndex": row - 1,
+                            "endRowIndex": row,
+                            "startColumnIndex": col_i,
+                            "endColumnIndex": col_i + 1
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": rgb_color.to_float_rgb_dict()
+                            }
+                        },
+                        "fields": "userEnteredFormat(backgroundColor)"
+                    }
                 },
-                "cell": {
-                  "userEnteredFormat": {
-                    "backgroundColor": rgb_color.to_float_rgb_dict()
-                  }
-                },
-                "fields": "userEnteredFormat(backgroundColor)"
-              }
-            },
-          ]
+            ]
         }
         self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
