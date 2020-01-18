@@ -39,13 +39,14 @@ GUILD_URL       = "https://{zone}.api.blizzard.com/wow/guild/{server}/{name}?fie
 
 ####################
 # Headers
-H_DATE        = "date"
-H_SERVER      = "server"
-H_NAME        = "name"
-H_CLASS       = "class"
-H_LVL         = "level"
-H_ILVL        = "ilvl"
-H_AZERITE_LVL = "Azerite lvl"
+H_DATE         = "date"
+H_SERVER       = "server"
+H_NAME         = "name"
+H_CLASS        = "class"
+H_LVL          = "level"
+H_ILVL         = "ilvl"
+H_AZERITE_LVL  = "Azerite lvl"
+H_ASHJRA_KAMAS = "Ashjra’kamas"
 
 ####################
 # Achievements: {ID: stepped}
@@ -366,12 +367,25 @@ class CharactersExtractor:
         char.set_data(H_LVL, str(char_json[H_LVL]))
         items = char_json["items"]
         char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
+
         # Searching the 'azeriteLevel' of the item in the neck slot
         try:
             char.set_data(H_AZERITE_LVL, str(items["neck"]["azeriteItem"]["azeriteLevel"]))
         except (ValueError, KeyError):
             logging.warn("Cannot find azerite level.")
             char.set_data(H_AZERITE_LVL, "0")
+
+        # patch 8.3 introduced a new legendary cloak called 'Ashjra’kamas'
+        # Searching the 'rank' of this item.
+        try:
+            back_item = items["back"]
+            if back_item["id"] != 169223:
+                raise ValueError("Item is not Ashjra’kamas: %s", back_item["name"])
+            print(items["back"])
+            char.set_data(H_ASHJRA_KAMAS, back_item["quality"])
+        except (ValueError, KeyError):
+            logging.warn("Cannot find 'Ashjra’kamas'.")
+            char.set_data(H_ASHJRA_KAMAS, "None")
 
         # Checking gear
         if check_gear:
