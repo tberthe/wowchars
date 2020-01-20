@@ -384,7 +384,7 @@ class CharactersExtractor:
             char.set_data(H_ASHJRA_KAMAS, back_item["quality"])
         except (ValueError, KeyError):
             logging.warn("Cannot find 'Ashjra’kamas'.")
-            char.set_data(H_ASHJRA_KAMAS, "None")
+            char.set_data(H_ASHJRA_KAMAS, "NA")
 
         # Checking gear
         if check_gear:
