@@ -296,7 +296,7 @@ class CharactersExtractor:
         r.raise_for_status()
         body = r.json()
         logging.trace(body)
-        members = ["members"]
+        members = body["members"]
         guild_chars = []
         for m in members:
             charname = m["character"]["name"]
