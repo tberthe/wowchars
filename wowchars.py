@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "3.1.2"
+__version__ = "3.2.0"
 
 """
 TODO: remove hardcoded enchants / gems suggestions
@@ -23,6 +23,7 @@ import os
 import string
 from time import strftime
 
+# import googleapiclient
 from apiclient import discovery
 from oauth2client import client
 from oauth2client import tools
