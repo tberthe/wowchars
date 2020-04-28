@@ -5,7 +5,6 @@ __version__ = "4.0.0"
 """
 TODO: Add missing docstrings
 TODO: fix support of achievements
-TODO: fix support of professions
 TODO: remove hardcoded enchants / gems suggestions
       ==> replace by CSV file
       and/or
