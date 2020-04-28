@@ -309,7 +309,7 @@ class CharactersExtractor:
                 logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logging.warn("no server name, using default server 'voljin'")
+                logging.warning("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_guildname
 
@@ -357,12 +357,12 @@ class CharactersExtractor:
                 logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logging.warn("no server name, using default server 'voljin'")
+                logging.warning("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_name
 
         if self.get_known_char(server, name):
-            logging.warn("character '%s' already processed" % (serv_and_name))
+            logging.warning("character '%s' already processed" % (serv_and_name))
             return
 
         char = CharInfo(server, name)
@@ -411,8 +411,8 @@ class CharactersExtractor:
             neck = self.get_item(items, "NECK")
             char.set_data(H_AZERITE_LVL, str(neck["azerite_details"]["level"]["value"]))
         except (ValueError, KeyError):
-            logging.warn("Cannot find azerite level.")
-            char.set_data(H_AZERITE_LVL, "0")
+            logging.warning("Cannot find azerite level.")
+            char.set_data(H_AZERITE_LVL, "NA")
 
         # patch 8.3 introduced a new legendary cloak called 'Ashjra’kamas'
         # Searching the 'rank' of this item.
@@ -425,7 +425,7 @@ class CharactersExtractor:
             rank = back_item["name_description"]["display_string"]
             char.set_data(H_ASHJRA_KAMAS, "%d (%s)" % (ilvl, rank))
         except (ValueError, KeyError):
-            logging.warn("Cannot find 'Ashjra’kamas'.")
+            logging.warning("Cannot find 'Ashjra’kamas'.")
             char.set_data(H_ASHJRA_KAMAS, "NA")
 
         # Checking gear
@@ -490,7 +490,7 @@ class CharactersExtractor:
             logging.trace(obj)
             achievements = obj["achievements"]
         except ValueError:
-            logging.warn("cannot retrieve achievements for %s/%s", char.server(), char.name())
+            logging.warning("cannot retrieve achievements for %s/%s", char.server(), char.name())
 
         for ach_desc in self.achievements:
             ach_id = ach_desc["id"]
