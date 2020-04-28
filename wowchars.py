@@ -39,6 +39,7 @@ from oauth2client.file import Storage
 TOKEN_URL       = "https://{zone}.battle.net/oauth/token"
 CHAR_URL        = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
 EQUIPMENT_URL   = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}/equipment?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
+PROFESSIONS_URL = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}/professions?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
 BASE_ACHIEV_URL = "https://{zone}.api.blizzard.com/wow/achievement/{id}?access_token={access_token}"
 BASE_ITEM_URL   = "https://{zone}.api.blizzard.com/wow/item/{id}{slash_context}?bl={bonus_list}&access_token={access_token}"
 CLASSES_URL     = "https://{zone}.api.blizzard.com/data/wow/playable-class/index?namespace=static-{zone}&locale=en_GB&access_token={access_token}"
@@ -556,24 +557,25 @@ class CharactersExtractor:
         Args:
             char (CharInfo): the character to fetch
         """
-        logging.warn("Blizzard's new API does not yet provide professions' data !")
+        try:
+            url = PROFESSIONS_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name().lower())
+            logging.debug(url)
+            r = requests.get(url)
+            r.raise_for_status()
+            obj = r.json()
+            logging.trace(obj)
+            professions = obj["primaries"]
+        except ValueError:
+            logging.warning("cannot retrieve professions for %s/%s", char.server(), char.name())
 
-        # try:
-        #     url = CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="professions")
-        #     logging.debug(url)
-        #     r = requests.get(url)
-        #     r.raise_for_status()
-        #     obj = r.json()
-        #     logging.trace(obj)
-        #     professions = obj["professions"]["primary"]
-        # except ValueError:
-        #     logging.warn("cannot retrieve professions for %s/%s", char.server(), char.name())
-
-        # count = 0
-        # for profession in professions:
-        #     if profession["name"].startswith("Kul Tiran"):
-        #         count += 1
-        #         char.set_data("BfA profession %d" % count, "%s: %d" % (profession["name"].replace("Kul Tiran", "BfA"), profession["rank"]))
+        count = 0
+        for profession in professions:
+            for tier in profession["tiers"]:
+                tier_name = tier["tier"]["name"]
+                if tier_name.startswith("Kul Tiran") or tier_name.startswith("Zandalari"):
+                    count += 1
+                    tier_name = tier_name.replace("Kul Tiran ", "").replace("Zandalari ", "")
+                    char.set_data("BfA profession %d" % count, "%s: %d" % (tier_name, tier["skill_points"]))
 
     def fetch_achievements_details(self):
         """Fetch details for the achievements to check"""
