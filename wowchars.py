@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "3.2.0"
+__version__ = "4.0.0"
 
 """
+TODO: Add missing docstrings
+TODO: fix support of achievements
 TODO: remove hardcoded enchants / gems suggestions
       ==> replace by CSV file
       and/or
@@ -12,14 +14,16 @@ TODO: add suboptions to --guild: min level, min ilvl
 TODO: [Google Sheets] colorize names with class colors ?
 TODO: [Google Sheets] header freeze + color?
 TODO: [Google Sheets] automatically add graph(s) ?
+TODO: [Google Sheets] batch color update instead of many single updates (might be faster)
 """
 
-import requests
-import csv
 import argparse
-import logging
+import csv
 import httplib2
+import logging
 import os
+import re
+import requests
 import string
 from time import strftime
 
@@ -32,11 +36,13 @@ from oauth2client.file import Storage
 ####################
 # URLs
 TOKEN_URL       = "https://{zone}.battle.net/oauth/token"
-BASE_CHAR_URL   = "https://{zone}.api.blizzard.com/wow/character/{server}/{name}?fields={fields}&access_token={access_token}"
+CHAR_URL        = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
+EQUIPMENT_URL   = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}/equipment?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
+PROFESSIONS_URL = "https://{zone}.api.blizzard.com/profile/wow/character/{server}/{name}/professions?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
 BASE_ACHIEV_URL = "https://{zone}.api.blizzard.com/wow/achievement/{id}?access_token={access_token}"
 BASE_ITEM_URL   = "https://{zone}.api.blizzard.com/wow/item/{id}{slash_context}?bl={bonus_list}&access_token={access_token}"
-CLASSES_URL     = "https://{zone}.api.blizzard.com/wow/data/character/classes?locale=en_GB&access_token={access_token}"
-GUILD_URL       = "https://{zone}.api.blizzard.com/wow/guild/{server}/{name}?fields={fields}&access_token={access_token}"
+CLASSES_URL     = "https://{zone}.api.blizzard.com/data/wow/playable-class/index?namespace=static-{zone}&locale=en_GB&access_token={access_token}"
+GUILD_URL       = "https://{zone}.api.blizzard.com/data/wow/guild/{server}/{name}/roster?namespace=profile-{zone}&locale=en_GB&access_token={access_token}"
 
 ####################
 # Headers
@@ -105,6 +111,8 @@ class CharInfo(dict):
         super().__init__()
         self[H_SERVER] = server
         self[H_NAME] = name
+        self.nb_missing_gems = None
+        self.missing_enchants = []
 
     def server(self):
         """Get character's server
@@ -121,6 +129,14 @@ class CharInfo(dict):
             (str) name of the character
         """
         return self[H_NAME]
+
+    def fullname(self):
+        """Get character's full name
+
+        Returns:
+            (str) name & server of the character
+        """
+        return "%s:%s" % (self.name(), self.server())
 
     def classname(self):
         """Get character's class
@@ -184,6 +200,15 @@ class CharInfo(dict):
             logging.error("Classname not set when requiring color")
         return "#FFFFFF"
 
+    def set_nb_missing_gems(self, nb_missing_gems):
+        self.nb_missing_gems = nb_missing_gems
+
+    def set_missing_enchants(self, missing_enchants):
+        self.missing_enchants = missing_enchants
+
+    def has_missing_gem_or_enchant(self):
+        return self.nb_missing_gems or self.missing_enchants
+
 
 class CharactersExtractor:
     """Class processing World Of Warcraft characters:
@@ -211,8 +236,6 @@ class CharactersExtractor:
         self.zone = zone
         self.achievements = []  # achievement details
         self.characters = []    # fetched characters
-        self.to_fix = {}        # {char, [to fix]}
-        self.classnames = {}    # {id, classname}
 
     def run(self, guild, chars, raid, csv_output, summary,
             check_gear, google_sheet_id, dry_run,
@@ -231,7 +254,6 @@ class CharactersExtractor:
             default_server (string): default server if not given in 'chars'
         """
         self.fetch_achievements_details()
-        self.fetch_classes()
 
         guild_chars = self.find_guild_characters(guild, default_server) if guild else []
 
@@ -287,11 +309,14 @@ class CharactersExtractor:
                 logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logging.warn("no server name, using default server 'voljin'")
+                logging.warning("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_guildname
 
-        url = GUILD_URL.format(zone=self.zone, access_token=self.access_token, server=server, name=name, fields="members")
+        # Blizzard API does not recognize guild names with spaces anymore
+        name = name.replace(" ", "-")
+
+        url = GUILD_URL.format(zone=self.zone, access_token=self.access_token, server=server, name=name.replace(" ", "-"))
         logging.debug(url)
         r = requests.get(url)
         r.raise_for_status()
@@ -302,7 +327,7 @@ class CharactersExtractor:
         for m in members:
             charname = m["character"]["name"]
             level = m["character"]["level"]
-            realm = m["character"]["realm"]
+            realm = m["character"]["realm"]["slug"]
             logging.debug("%3d %s" % (level, charname))
             if level >= 111:
                 logging.info("Found valid character: %3d %s" % (level, charname))
@@ -332,17 +357,18 @@ class CharactersExtractor:
                 logging.info("no server name, using default server '%s'", default_server)
                 server = default_server
             else:
-                logging.warn("no server name, using default server 'voljin'")
+                logging.warning("no server name, using default server 'voljin'")
                 server = "voljin"
             name = serv_and_name
 
         if self.get_known_char(server, name):
-            logging.warn("character '%s' already processed" % (serv_and_name))
+            logging.warning("character '%s' already processed" % (serv_and_name))
             return
 
         char = CharInfo(server, name)
         try:
-            self.fetch_char_base(char, check_gear)
+            self.fetch_char_base(char)
+            self.fetch_char_items(char, check_gear)
             if not raid:
                 self.fetch_char_achievements(char)
                 self.fetch_char_professions(char)
@@ -351,143 +377,101 @@ class CharactersExtractor:
             return
         self.characters.append(char)
 
-    def fetch_char_base(self, char, check_gear):
+    def fetch_char_base(self, char):
         """Fetch and fill info for the given character: level + items related info
 
         Args:
             char (CharInfo): the character to fetch
-            check_gear (bool): check gear for any missing gem or enchantment
         """
-        url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="items")
+        url = CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name().lower())
         logging.debug(url)
         r = requests.get(url)
         r.raise_for_status()
         char_json = r.json()
         logging.trace(char_json)
-        char.set_data(H_CLASS, self.classnames[char_json[H_CLASS]])
+        char.set_data(H_CLASS, char_json["character_class"]["name"])
         char.set_data(H_LVL, str(char_json[H_LVL]))
-        items = char_json["items"]
-        char.set_data(H_ILVL, str(items["averageItemLevelEquipped"]))
+        char.set_data(H_ILVL, str(char_json["average_item_level"]))
+
+    def fetch_char_items(self, char, check_gear):
+        """Fetch and fill info for the items of the given character
+
+        Args:
+            char (CharInfo): the character to fetch
+            check_gear (bool): check gear for any missing gem or enchantment
+        """
+        url = EQUIPMENT_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name().lower())
+        logging.debug(url)
+        r = requests.get(url)
+        r.raise_for_status()
+        items = r.json()["equipped_items"]
 
         # Searching the 'azeriteLevel' of the item in the neck slot
         try:
-            char.set_data(H_AZERITE_LVL, str(items["neck"]["azeriteItem"]["azeriteLevel"]))
+            neck = self.get_item(items, "NECK")
+            char.set_data(H_AZERITE_LVL, str(neck["azerite_details"]["level"]["value"]))
         except (ValueError, KeyError):
-            logging.warn("Cannot find azerite level.")
-            char.set_data(H_AZERITE_LVL, "0")
+            logging.warning("Cannot find azerite level.")
+            char.set_data(H_AZERITE_LVL, "NA")
 
         # patch 8.3 introduced a new legendary cloak called 'Ashjra’kamas'
         # Searching the 'rank' of this item.
         try:
-            back_item = items["back"]
-            if back_item["id"] != 169223:
+            back_item = self.get_item(items, "BACK")
+            if back_item["item"]["id"] != 169223:
                 raise ValueError("Item is not Ashjra’kamas: %s", back_item["name"])
             # TODO: find how to get rank, using itemLevel until then
-            char.set_data(H_ASHJRA_KAMAS, back_item["itemLevel"])
+            ilvl = back_item["level"]["value"]
+            rank = back_item["name_description"]["display_string"]
+            char.set_data(H_ASHJRA_KAMAS, "%d (%s)" % (ilvl, rank))
         except (ValueError, KeyError):
-            logging.warn("Cannot find 'Ashjra’kamas'.")
+            logging.warning("Cannot find 'Ashjra’kamas'.")
             char.set_data(H_ASHJRA_KAMAS, "NA")
 
         # Checking gear
         if check_gear:
             total_empty_sockets = 0
             missing_enchants = []
-            for slot in sorted(items):
-                item = items[slot]
-                nb_empty_sockets, missing_enchant = self.check_item_enchants_and_gems(slot, item)
+            for item in items:
+                nb_empty_sockets, missing_enchant = self.check_item_enchants_and_gems(item)
                 total_empty_sockets += nb_empty_sockets
                 if missing_enchant:
-                    missing_enchants.append(slot)
+                    missing_enchants.append(item["inventory_type"]["name"])
 
-            # specific to my characters
-            STAT_ENCHANTS = {
-                # "oxyde"   : ("versatility", "agi", "heavy hide"),
-                # "ayonis"  : ("haste",       "int", "satyr"),
-                # "oxyr"    : ("haste",       "agi", "satyr"),
-                # "agoniss" : ("haste",       "int", "satyr"),
-                # "palaniss": ("haste",       "str", "satyr"),
-                # "odyxe"   : ("mastery",     "agi", "satyr"),
-                # "kodyx"   : ("mastery",     "str", "satyr"),
-                # "oxymus"  : ("haste",       "int", "satyr"),
-                # "monxy"   : ("mastery",     "agi", "satyr"),
-                # "oxgrom"  : ("haste",       "str", "satyr"),
-                # "oxydhe"  : ("crit",        "agi", "satyr"),
-                # "voxy"    : ("mastery",     "agi", "satyr"),
-            }
+            char.set_nb_missing_gems(total_empty_sockets)
+            char.set_missing_enchants(missing_enchants)
 
-            to_fix = []
-            if total_empty_sockets:
-                if char.name() in STAT_ENCHANTS:
-                    to_fix.extend(["gem " + STAT_ENCHANTS[char.name()][0] for i in range(total_empty_sockets)])
-                else:
-                    to_fix.append("%d gem(s)" % total_empty_sockets)
-            for m in missing_enchants:
-                if char.name() in STAT_ENCHANTS:
-                    if "finger" in m:
-                        to_fix.append("enchant ring " + STAT_ENCHANTS[char.name()][0])
-                    elif m == "back":
-                        to_fix.append("enchant back " + STAT_ENCHANTS[char.name()][1])
-                    elif m == "neck" and STAT_ENCHANTS[char.name()][2]:
-                        to_fix.append("enchant neck " + STAT_ENCHANTS[char.name()][2])
-                    else:
-                        to_fix.append("enchant " + m)
-                else:
-                    to_fix.append("enchant " + m)
-
-            if to_fix:
-                self.to_fix["%s-%s" % (char.name(), char.server())] = to_fix
-
-    def check_item_enchants_and_gems(self, slot, item_dict):
+    def check_item_enchants_and_gems(self, item):
         """Check any missing enchant or gem in the given item
 
         Args:
-            slot (str): slot of the item (ex: head, back, shoulders, neck...)
-            item_dict (dict): incomplete description of the item received from
-                              the API
+            item (dict): description of the item
 
         Returns:
             (int, boolean): (number of empty gem slot, true is not enchanted)
 
         """
-        if not isinstance(item_dict, dict) or "id" not in item_dict:
-            return 0, False
+        item_type = item["inventory_type"]["type"]
+        slot = item["slot"]["name"]
         logging.debug("Checking enchants and gems of slot: %s", slot)
-        item_id = item_dict["id"]
-        context = item_dict["context"]
-        # Some contexts seem to be invalid in the API, so we do not use them
-        if context in ["vendor", "scenario-normal", "quest-reward"]:
-            context = ""
-        elif context:
-            context = "/" + context
-        bonus_list = ",".join([str(b) for b in item_dict["bonusLists"]])
+
         nb_empty_sockets = 0
         missing_enchant = False
-        # getting full item description
-        try:
-            # logging.debug(item_dict)
-            url = BASE_ITEM_URL.format(zone=self.zone, access_token=self.access_token, id=item_id,
-                                       slash_context=context,
-                                       bonus_list=bonus_list)
-            logging.debug(url)
-            r = requests.get(url)
-            r.raise_for_status()
-            item = r.json()
-            logging.trace(item)
-            # checking gem slots & checking with current item state
-            nb_sockets = len(item["socketInfo"]) if "socketInfo" in item else 0
-            for i in range(nb_sockets):
-                if ("gem%d" % i) not in item_dict["tooltipParams"]:
-                    nb_empty_sockets += 1
-            if nb_empty_sockets:
-                logging.debug("Found %d empty socket(s)", nb_empty_sockets)
 
-            # checking enchants
-            if slot in ["finger1", "finger2", "mainHand"]:
-                if ("enchant") not in item_dict["tooltipParams"]:
-                    logging.debug("Detected missing enchantment for this slot !")
-                    missing_enchant = True
-        except ValueError:
-            logging.error("cannot get full item description for %s", item_id)
+        # checking gem slots & checking with current item state
+        if "sockets" in item:
+            for s in item["sockets"]:
+                if "item" not in s:
+                    nb_empty_sockets += 1
+
+        if nb_empty_sockets:
+            logging.debug("Found %d empty socket(s)", nb_empty_sockets)
+
+        # checking enchants
+        if item_type in ["FINGER", "MAIN_HAND"]:
+            if ("enchantments" not in item) or (not item["enchantments"]):
+                logging.debug("Detected missing enchantment for this slot !")
+                missing_enchant = True
 
         return nb_empty_sockets, missing_enchant
 
@@ -498,7 +482,7 @@ class CharactersExtractor:
             char (CharInfo): the character to fetch
         """
         try:
-            url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="achievements,quests")
+            url = CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name().lower(), fields="achievements,quests")
             logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
@@ -506,7 +490,7 @@ class CharactersExtractor:
             logging.trace(obj)
             achievements = obj["achievements"]
         except ValueError:
-            logging.warn("cannot retrieve achievements for %s/%s", char.server(), char.name())
+            logging.warning("cannot retrieve achievements for %s/%s", char.server(), char.name())
 
         for ach_desc in self.achievements:
             ach_id = ach_desc["id"]
@@ -573,21 +557,24 @@ class CharactersExtractor:
             char (CharInfo): the character to fetch
         """
         try:
-            url = BASE_CHAR_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name(), fields="professions")
+            url = PROFESSIONS_URL.format(zone=self.zone, access_token=self.access_token, server=char.server(), name=char.name().lower())
             logging.debug(url)
             r = requests.get(url)
             r.raise_for_status()
             obj = r.json()
             logging.trace(obj)
-            professions = obj["professions"]["primary"]
+            professions = obj["primaries"]
         except ValueError:
-            logging.warn("cannot retrieve professions for %s/%s", char.server(), char.name())
+            logging.warning("cannot retrieve professions for %s/%s", char.server(), char.name())
 
         count = 0
         for profession in professions:
-            if profession["name"].startswith("Kul Tiran"):
-                count += 1
-                char.set_data("BfA profession %d" % count, "%s: %d" % (profession["name"].replace("Kul Tiran", "BfA"), profession["rank"]))
+            for tier in profession["tiers"]:
+                tier_name = tier["tier"]["name"]
+                if tier_name.startswith("Kul Tiran") or tier_name.startswith("Zandalari"):
+                    count += 1
+                    tier_name = tier_name.replace("Kul Tiran ", "").replace("Zandalari ", "")
+                    char.set_data("BfA profession %d" % count, "%s: %d" % (tier_name, tier["skill_points"]))
 
     def fetch_achievements_details(self):
         """Fetch details for the achievements to check"""
@@ -603,23 +590,6 @@ class CharactersExtractor:
             logging.info("%6d: %s", ach["id"], ach["title"])
             self.achievements.append(ach)
 
-    def fetch_classes(self):
-        """Fetch the 'class id' to 'name' mapping"""
-        print("======================================================")
-        print("Fetching classes")
-        url = CLASSES_URL.format(zone=self.zone, access_token=self.access_token)
-        logging.debug(url)
-        r = requests.get(url)
-        r.raise_for_status()
-        body = r.json()
-        logging.trace(body)
-        classes = body["classes"]
-        for c in classes:
-            cid = int(c["id"])
-            name = c["name"]
-            self.classnames[cid] = name
-            logging.info("%2d: %s", cid, name)
-
     def get_achievement_title(self, ach_id):
         """Get name of a known achievement
 
@@ -633,6 +603,21 @@ class CharactersExtractor:
             if ach_id == a["id"]:
                 return a["title"]
         raise ValueError("Cannot retrieve achievement %d" % ach_id)
+
+    def get_item(self, items, slot_type):
+        """retrieve item of the selected slot.
+
+        Args:
+            items (array): list of items of a character
+            slot_type (str): searched slot
+
+        Returns:
+            the item of the given slot or None
+        """ 
+        for item in items:
+            if item["slot"]["type"] == slot_type:
+                return item
+        return None
 
     def save_csv(self, output_file):
         """Save the results in a CSV file
@@ -689,18 +674,34 @@ class CharactersExtractor:
     def display_gear_to_fix(self):
         """Display gear to fix: missing gems or enchantments"""
         print("======================================================")
-        print("/!\\ %d character(s) to fix!" % len(self.to_fix))
-        for c in self.to_fix:
-            print("%s: %s" % (c, ", ".join(self.to_fix[c])))
+
+        chars_to_fix = list(filter(lambda x: x.has_missing_gem_or_enchant(), self.characters))
+        print("/!\\ %d character(s) to fix!" % len(chars_to_fix))
+        for c in chars_to_fix:
+            missing = ""
+            if c.nb_missing_gems:
+                missing += "%d gem%s" % (c.nb_missing_gems, "s" if (c.nb_missing_gems > 2) else "")
+            if c.missing_enchants:
+                missing += ", " + ", ".join(c.missing_enchants)
+            print("%s: %s" % (c.name(), missing))
+
         print("---------------------------")
-        to_create = {}
-        for c in self.to_fix:
-            for tc in self.to_fix[c]:
-                if tc not in to_create:
-                    to_create[tc] = [1, set()]
+        to_create = {}  # {enchant : [nb, set of chars]}
+        for c in chars_to_fix:
+            nb_gems = c.nb_missing_gems
+            if nb_gems:
+                if "Gem" not in to_create:
+                    to_create["Gem"] = [1, set()]
                 else:
-                    to_create[tc][0] += 1
-                to_create[tc][1].add(c)
+                    to_create["Gem"][0] += 1
+                to_create["Gem"][1].add("%s(%d)" %(c.name(), nb_gems))
+
+            for enchant in c.missing_enchants:
+                if enchant not in to_create:
+                    to_create[enchant] = [1, set()]
+                else:
+                    to_create[enchant][0] += 1
+                to_create[enchant][1].add(c.name())
 
         for tc in sorted(to_create):
             print("%s: %s %s" % (tc, to_create[tc][0], to_create[tc][1]))
@@ -722,12 +723,12 @@ class CharactersExtractor:
         fieldnames = self.get_ordered_fieldnames()
         sc.ensure_headers(SUMMARY, fieldnames)
 
-        sheet_values = sc.get_values(SUMMARY + "!A:Z")
+        sheet_values, _range = sc.get_values(SUMMARY + "!A:Z")
         headers = sheet_values[0]
         h_indexes = {h: i for i, h in enumerate(headers)}
         values = sheet_values[1:]
 
-        update_data = []  # cell values to update
+        update_data = SheetBatchUpdateData()  # cell values to update
         to_colorize = []  # cells to colorize (when adding new character(s))
 
         # updating / adding characters info
@@ -735,31 +736,30 @@ class CharactersExtractor:
             char_index = None
             # checking if character is already known
             for i, g_line in enumerate(values):
-                if g_line[h_indexes[H_SERVER]] == r[H_SERVER] and g_line[h_indexes[H_NAME]] == r[H_NAME]:
-                    char_index = i
-                    break
+                if g_line[h_indexes[H_SERVER]] == r[H_SERVER]:
+                    g_name = g_line[h_indexes[H_NAME]]
+                    if (g_name == r.name()) or (g_name == r.name().lower()):
+                        char_index = i
+                        break
 
             if char_index is not None:
                 g_row = values[char_index]
                 for i, h in enumerate(headers):
                     if (h in fieldnames) and (h in r) and r[h] and ((i >= len(g_row)) or (r[h] != g_row[i])):
-                        cell_id = "%s%d" % (column_letter(i), char_index + 2)
-                        update_data.append({
-                            "values": [[r[h]]],
-                            "range": SUMMARY + "!%s:%s" % (cell_id, cell_id),
-                        })
+                        cell_col = column_letter(i)
+                        cell_row = char_index + 2
+                        update_data.add_data(SUMMARY, cell_col, cell_row, cell_col, cell_row, [[r[h]]])
+
             else:
                 line = [(r[h] if h in r else None) for h in headers]
                 values.append(line)
                 row_index = len(values) + 1
-                update_data.append({
-                    "values": [line],
-                    "range": SUMMARY + "!A{row}:Z{row}".format(row=row_index),
-                })
+                update_data.add_data(SUMMARY, "A", row_index, column_letter(len(line) - 1), row_index, [line])
                 to_colorize.append((h_indexes[H_NAME], row_index, r.get_hex_color()))
 
         if update_data:
             sc.update_values(update_data)
+            # TODO: batch update instead of single one
             for tc in to_colorize:
                 color = RGBColor.from_hex(tc[2])
                 column = column_letter(tc[0])
@@ -778,25 +778,29 @@ class CharactersExtractor:
         print("Synching ilvl/level in Google Sheets")
 
         sc = SheetConnector(google_sheet_id, dry_run)
-        names = [r[H_NAME] for r in sorted(self.characters, key=lambda x:x[H_NAME])]
+        names = [c.name() for c in sorted(self.characters, key=lambda x:x.name())]
 
-        update_data = []
+        update_data = SheetBatchUpdateData()
         today = strftime("%Y-%m-%d")
 
         for s in [H_LVL, H_ILVL]:
             v_dict = {r[H_NAME]: r[s] for r in sorted(self.characters, key=lambda x: x[H_NAME])}
             sc.ensure_headers(s, [H_DATE] + names)
-            sheet_values = sc.get_values("%s!A:Z" % s)
+            sheet_values, _range = sc.get_values("%s!A:Z" % s)
             headers = sheet_values[0]
             h_indexes = {h: i for i, h in enumerate(headers)}
             update_needed = False
             last_update_today = (len(sheet_values) > 1) and (sheet_values[-1][h_indexes[H_DATE]] == today)
+            # Checking if an update is needed on the sheet
             if len(sheet_values) <= 1:
                 update_needed = True
             else:
                 values = sheet_values[1:]
                 last_line = values[-1]
                 for name in sorted(v_dict):
+                    if name not in h_indexes:
+                        update_needed = True
+                        break
                     h_i = h_indexes[name]
                     if len(last_line) <= h_i:
                         update_needed = True
@@ -822,10 +826,7 @@ class CharactersExtractor:
             line_nb = len(sheet_values)
             if (len(sheet_values) <= 1) or (sheet_values[-1][h_indexes[H_DATE]] < today):
                 line_nb += 1
-            update_data.append({
-                "values": [line],
-                "range": "%s!A%d:Z%d" % (s, line_nb, line_nb),
-            })
+            update_data.add_data(s, "A", line_nb, "Z", line_nb, [line])
 
         if update_data:
             sc.update_values(update_data)
@@ -1018,13 +1019,13 @@ class SheetConnector:
 
         self.spreadsheetId = sheet_id
 
-    def check_or_create_sheet(self, sheetName):
+    def check_or_create_sheet(self, sheet_name):
         """Check if the sheet exists in the document, create it otherwise
 
         Args:
-            sheetName (str): name of the sheet to check
+            sheet_name (str): name of the sheet to check
         """
-        if self.sheet_exists(sheetName):
+        if self.sheet_exists(sheet_name):
             return
 
         body = {
@@ -1032,7 +1033,7 @@ class SheetConnector:
                 {
                     "addSheet": {
                         "properties": {
-                            "title": sheetName,
+                            "title": sheet_name,
                             # "gridProperties": {
                             #   "rowCount": 20,
                             #   "columnCount": 12
@@ -1049,29 +1050,29 @@ class SheetConnector:
         }
         self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
 
-    def sheet_exists(self, sheetName):
+    def sheet_exists(self, sheet_name):
         """Check if the sheet exists in the document
 
         Args:
-            sheetName (str): name of the sheet to check
+            sheet_name (str): name of the sheet to check
         """
-        return sheetName in self.get_sheets()
+        return sheet_name in self.get_sheets()
 
-    def delete_sheet(self, sheetName):
+    def delete_sheet(self, sheet_name):
         """Delete the sheet in the spreadsheet
 
         Args:
-            sheetName (str): name of the sheet to delete
+            sheet_name (str): name of the sheet to delete
         """
         sheets = self.get_sheets()
-        if sheetName not in sheets:
+        if sheet_name not in sheets:
             return
 
         body = {
             "requests": [
                 {
                     "deleteSheet": {
-                        "sheetId": sheets[sheetName]
+                        "sheetId": sheets[sheet_name]
                     }
                 }
             ]
@@ -1088,15 +1089,15 @@ class SheetConnector:
         sheets = sheet_metadata.get('sheets', '')
         return {s["properties"]["title"]: s["properties"]["sheetId"] for s in sheets}
 
-    def ensure_headers(self, sheetName, fieldnames):
+    def ensure_headers(self, sheet_name, fieldnames):
         """Ensure the sheet exists and contains the specified headers
 
         Args:
-            sheetName (str): name of the sheet to check
-            sheetName (str array): headers to check
+            sheet_name (str): name of the sheet to check
+            sheet_name (str array): headers to check
         """
-        self.check_or_create_sheet(sheetName)
-        values = self.get_values(sheetName + "!1:1")
+        self.check_or_create_sheet(sheet_name)
+        values, _range = self.get_values(sheet_name + "!1:1")
         g_headers = values[0] if values else []
 
         appended_headers = []
@@ -1112,13 +1113,12 @@ class SheetConnector:
                 g_headers_indexes[field] = len(g_headers)
 
         if(appended_headers):
-            range_name = "%s!%s1:AZ1" % (sheetName, column_letter(len(g_headers_indexes) - len(appended_headers)))
-            logging.info("Adding headers in %s => %s", range_name, appended_headers)
-
-            update_data = [{
-                "values": [appended_headers],
-                "range": range_name,
-            }]
+            logging.info("Adding headers %s", appended_headers)
+            update_data = SheetBatchUpdateData()
+            update_data.add_data(sheet_name,
+                                 column_letter(len(g_headers_indexes) - len(appended_headers)), 1,
+                                 column_letter(len(g_headers_indexes) - 1), 1,
+                                 [appended_headers])
             self.update_values(update_data)
 
     def update_values(self, update_data):
@@ -1127,10 +1127,32 @@ class SheetConnector:
         Args:
             update_data (array): data to update, ex: [{"values": [["val1", "val2"]], "range": "sheet2!A2:B2"}]
         """
-        body = {"data": update_data, "value_input_option": "USER_ENTERED"}
-        logging.info("%sUpdating data in Google sheets: %s", ("DRYRUN: " if self.dry_run else ""), update_data)
+        self.ensure_no_missing_row_or_column(update_data)
+
+        data = update_data.to_query_data()
+        body = {"data": data, "value_input_option": "USER_ENTERED"}
+        logging.info("%sUpdating data in Google sheets: %s", ("DRYRUN: " if self.dry_run else ""), data)
         if not self.dry_run:
             self.service.spreadsheets().values().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
+
+    def ensure_no_missing_row_or_column(self, update_data):
+        max_cols = update_data.get_max_columns()
+
+        for mc in max_cols:
+            last_col = self.get_last_column(mc)
+            last_col_index = column_index(last_col)
+            max_col_index = column_index(max_cols[mc])
+            if max_col_index > last_col_index:
+                sheet_id = self.get_sheet_id(mc)
+                self.append_columns(sheet_id, max_col_index - last_col_index)
+
+        max_rows = update_data.get_max_rows()
+        for mr in max_rows:
+            last_row_index = self.get_last_row(mr)
+            max_row_index = max_rows[mr]
+            if max_row_index > last_row_index:
+                sheet_id = self.get_sheet_id(mr)
+                self.append_rows(sheet_id, max_row_index - last_row_index)
 
     def get_values(self, rangeName):
         """Get values
@@ -1140,7 +1162,7 @@ class SheetConnector:
         """
         result = self.service.spreadsheets().values().get(
             spreadsheetId=self.spreadsheetId, range=rangeName).execute()
-        return result.get('values', [])
+        return result.get('values', []), result.get('range', None)
 
     def get_credentials(self, flags=None):
         """Gets valid user credentials from storage.
@@ -1216,6 +1238,94 @@ class SheetConnector:
             ]
         }
         self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=body).execute()
+
+    def get_sheet_id(self, sheet_name):
+        spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheetId).execute()
+        for _sheet in spreadsheet['sheets']:
+            if _sheet['properties']['title'] == sheet_name:
+                return _sheet['properties']['sheetId']
+        return None
+
+    def append_columns(self, sheet_id, nb_cols):
+        logging.debug("Adding %d column(s)" % nb_cols)
+        request_body = {
+            "requests": [{
+                "appendDimension": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "length": nb_cols
+                }
+            }]
+        }
+        self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=request_body).execute()
+
+    def append_rows(self, sheet_id, nb_rows):
+        logging.debug("Adding %d row(s)" % nb_rows)
+        request_body = {
+            "requests": [{
+                "appendDimension": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "length": nb_rows
+                }
+            }]
+        }
+        self.service.spreadsheets().batchUpdate(spreadsheetId=self.spreadsheetId, body=request_body).execute()
+
+    def get_last_column(self, sheet_name):
+        first_line_range = "{sheet}!1:1".format(sheet=sheet_name)
+        _, res_range = self.get_values(first_line_range)
+        match = re.match(r"(?P<sheet>.*)!(?P<start_col>\w+)(\d+)(:(?P<end_col>\w+)(\d+))?", res_range)
+        return match.group("end_col") or match.group("start_col")
+
+    def get_last_row(self, sheet_name):
+        first_row_range = "{sheet}!A:A".format(sheet=sheet_name)
+        _, res_range = self.get_values(first_row_range)
+        match = re.match(r"(?P<sheet>.*)!(\w+)(?P<start_row>\d+)(:(\w+)(?P<end_row>\d+))?", res_range)
+        return int(match.group("end_row") or match.group("start_row"))
+
+
+class SheetSingleUpdateData:
+    def __init__(self, sheet_name, start_col, start_row, end_col, end_row, values):
+        self.sheet_name = sheet_name
+        self.start_col = start_col
+        self.end_col = end_col
+        self.start_row = start_row
+        self.end_row = end_row
+        self.values = values
+
+    def to_query_data(self):
+        return {
+            "values": self.values,
+            "range": "%s!%s%d:%s%d" % (self.sheet_name, self.start_col, self.start_row, self.end_col, self.end_row)
+        }
+
+
+class SheetBatchUpdateData(list):
+    def add_data(self, sheet_name, start_col, start_row, end_col, end_row, values):
+        self.append(SheetSingleUpdateData(sheet_name, start_col, start_row, end_col, end_row, values))
+
+    def get_max_columns(self):
+        # grabbing max ranges for each sheet
+        max_columns = {}     # {sheet: max column}
+        for data in self:
+            if data.sheet_name not in max_columns:
+                max_columns[data.sheet_name] = data.end_col
+            elif data.end_col > max_columns[data.sheet_name]:
+                max_columns[data.sheet_name] = data.end_col
+        return max_columns
+
+    def get_max_rows(self):
+        max_rows = {}  # {sheet: max row}
+        for data in self:
+            if data.sheet_name not in max_rows:
+                max_rows[data.sheet_name] = data.end_row
+            elif data.end_row > max_rows[data.sheet_name]:
+                max_rows[data.sheet_name] = data.end_row
+        return max_rows
+
+    def to_query_data(self):
+        return [d.to_query_data() for d in self]
 
 
 if __name__ == "__main__":
