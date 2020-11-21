@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--blizzard-client-secret", help="Token to Blizzard's Battle.net API", required=True)
     parser.add_argument("-o", "--output", help="Output CSV file", required=False)
     parser.add_argument("-c", "--char", help="Check character (server:charname)", action="append", default=[], required=False)
-    parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 111")
+    parser.add_argument("--guild", help="Check characters from given GUILD with minimum level of 45")
     parser.add_argument("-r", "--raid", action="store_true", help="Only keeps info that are usefull for raids (class, lvl, ilvl)")
     parser.add_argument("-s", "--summary", help="Display summary", action="store_true")
     parser.add_argument("-v", "--verbosity", action="count", default=0, help="increase output verbosity")
