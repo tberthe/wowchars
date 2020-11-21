@@ -2,7 +2,7 @@
 
 **WoW Chars** is a character extractor for *World of Warcraft*.
 It fetches information from *Battle.net* , such as level, ilvl, specific achievements.
-Then it can display a summary or save the results in a CSV file or in a Google Sheets document.
+Then it can display a summary, save the results in a CSV file or in a Google Sheets document.
 
 ## Requirements
 
