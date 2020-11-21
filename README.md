@@ -9,6 +9,7 @@ Then it can display a summary, save the results in a CSV file or in a Google She
 ### Python3
 
 **Python3** is required with the following packages:
+
 * google-api-python-client
 * requests
 
@@ -23,6 +24,6 @@ pip3 install --upgrade requests
 
 TODO !
 
-# Usage
+## Usage
 
 TODO !
