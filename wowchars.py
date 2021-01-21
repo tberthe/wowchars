@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "4.0.0"
+__version__ = "5.0.0"
 
 """
-TODO: Add missing docstrings
 TODO: fix support of achievements
 TODO: remove hardcoded enchants / gems suggestions
       ==> replace by CSV file
@@ -11,7 +10,6 @@ TODO: remove hardcoded enchants / gems suggestions
       ==> retrieve advices from websites like Noxxic or Icy Veins
 
 TODO: add suboptions to --guild: min level, min ilvl
-TODO: [Google Sheets] colorize names with class colors ?
 TODO: [Google Sheets] header freeze + color?
 TODO: [Google Sheets] automatically add graph(s) ?
 TODO: [Google Sheets] batch color update instead of many single updates (might be faster)
