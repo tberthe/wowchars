@@ -23,8 +23,7 @@ GUILD_URL       = "https://{zone}.api.blizzard.com/data/wow/guild/{server}/{name
 
 # Headers
 H_DATE         = "date"
-H_AZERITE_LVL  = "Azerite lvl"
-H_ASHJRA_KAMAS = "Ashjra’kamas"
+H_SL_LEG       = "SL legendary"
 
 
 class CharactersExtractor:
@@ -206,7 +205,12 @@ class CharactersExtractor:
         logging.trace(char_json)
         char.classname = char_json["character_class"]["name"]
         char.level = char_json["level"]
-        char.ilevel = char_json["average_item_level"]
+        ilvl = char_json["average_item_level"]
+        # If the character has not been connected since patch 9.0, the ilvl does not take into account the ilevel squish applied in this patch.
+        # So in a first solution we put it between parenthesis
+        if (char.level <= 50) and (ilvl > 140):
+            ilvl = "(%d)" % ilvl
+        char.ilevel = ilvl
 
     def fetch_char_items(self, char, check_gear):
         """Fetch and fill info for the items of the given character
@@ -220,27 +224,17 @@ class CharactersExtractor:
         r = requests.get(url)
         r.raise_for_status()
         items = r.json()["equipped_items"]
+        logging.trace(items)
 
-        # Searching the 'azeriteLevel' of the item in the neck slot
-        try:
-            neck = self.get_item(items, "NECK")
-            char.set_data(H_AZERITE_LVL, str(neck["azerite_details"]["level"]["value"]))
-        except (ValueError, KeyError):
-            logging.warning("Cannot find azerite level.")
-            char.set_data(H_AZERITE_LVL, "NA")
-
-        # patch 8.3 introduced a new legendary cloak called 'Ashjra’kamas'
-        # Searching the 'rank' of this item.
-        try:
-            back_item = self.get_item(items, "BACK")
-            if back_item["item"]["id"] != 169223:
-                raise ValueError("Item is not Ashjra’kamas: %s", back_item["name"])
-            ilvl = back_item["level"]["value"]
-            rank = back_item["name_description"]["display_string"]
-            char.set_data(H_ASHJRA_KAMAS, "%d (%s)" % (ilvl, rank))
-        except (ValueError, KeyError):
-            logging.warning("Cannot find 'Ashjra’kamas'.")
-            char.set_data(H_ASHJRA_KAMAS, "NA")
+        # Search ShadowLands legendary item
+        sl_leg = self.get_shadowlands_legendary_item(items)
+        if sl_leg:
+            ilvl = sl_leg["level"]["value"]
+            name = sl_leg["name"]
+            char.set_data(H_SL_LEG, "%s (%d)" % (name, ilvl))
+        else:
+            logging.warning("Cannot find any SL legendary.")
+            char.set_data(H_SL_LEG, "NA")
 
         # Checking gear
         if check_gear:
@@ -290,7 +284,7 @@ class CharactersExtractor:
         return nb_empty_sockets, missing_enchant
 
     def fetch_char_professions(self, char):
-        """Fetch and fill BfA professions
+        """Fetch and fill ShadowLands professions
 
         Args:
             char (CharacterInfo): the character to fetch
@@ -310,13 +304,13 @@ class CharactersExtractor:
         for profession in professions:
             for tier in profession["tiers"]:
                 tier_name = tier["tier"]["name"]
-                if tier_name.startswith("Kul Tiran") or tier_name.startswith("Zandalari"):
+                if tier_name.startswith("Shadowlands "):
+                    tier_name = tier_name.replace("Shadowlands ", "")
                     count += 1
-                    tier_name = tier_name.replace("Kul Tiran ", "").replace("Zandalari ", "")
-                    char.set_data("BfA profession %d" % count, "%s: %d" % (tier_name, tier["skill_points"]))
+                    char.set_data("SL profession %d" % count, "%s: %d" % (tier_name, tier["skill_points"]))
 
     def get_item(self, items, slot_type):
-        """retrieve item of the selected slot.
+        """Retrieve item of the selected slot.
 
         Args:
             items (array): list of items of a character
@@ -329,6 +323,20 @@ class CharactersExtractor:
             if item["slot"]["type"] == slot_type:
                 return item
         raise ValueError("No item of type %s" % slot_type)
+
+    def get_shadowlands_legendary_item(self, items):
+        """Retrieve the equipped shadowlands legendary item.
+
+        Args:
+            items (array): list of items of a character
+
+        Returns:
+            The found legendary item
+        """
+        for item in items:
+            if ((item["quality"]["type"] == "LEGENDARY") and (item["requirements"]["level"]["value"] == 60)):
+                return item
+        return None
 
     def save_csv(self, output_file):
         """Save the results in a CSV file
