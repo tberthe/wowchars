@@ -349,7 +349,7 @@ class GoogleSheetsConnector:
         """
         first_row_range = "{sheet}!A:A".format(sheet=sheet_name)
         _, res_range = self.get_values(first_row_range)
-        match = re.match(r"(?P<sheet>.*)!(\w+)(?P<start_row>\d+)(:(\w+)(?P<end_row>\d+))?", res_range)
+        match = re.match(r"(?P<sheet>.*)!A(?P<start_row>\d+)(:A(?P<end_row>\d+))?", res_range)
         return int(match.group("end_row") or match.group("start_row"))
 
 
@@ -433,7 +433,7 @@ class SheetBatchUpdateData(list):
 
     def to_query_data(self):
         """Get the update data in the google sheet query format
-        
+
         Returns:
             The update as an object useable by the google sheet API
         """
