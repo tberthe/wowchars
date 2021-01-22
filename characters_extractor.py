@@ -464,7 +464,7 @@ class CharactersExtractor:
             if char_index is not None:
                 g_row = values[char_index]
                 for i, h in enumerate(headers):
-                    if (h in fieldnames) and (h in r) and r[h] and ((i >= len(g_row)) or (str(r[h]) != g_row[i])):
+                    if (h in fieldnames) and (h in r) and (r[h] is not None) and ((i >= len(g_row)) or (str(r[h]) != g_row[i])):
                         cell_col = column_letter(i)
                         cell_row = char_index + 2
                         update_data.add_data(SUMMARY, cell_col, cell_row, cell_col, cell_row, [[r[h]]])
