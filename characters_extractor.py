@@ -207,9 +207,9 @@ class CharactersExtractor:
         char.level = char_json["level"]
         ilvl = char_json["average_item_level"]
         # If the character has not been connected since patch 9.0, the ilvl does not take into account the ilevel squish applied in this patch.
-        # So in a first solution we put it between parenthesis
+        # So in a first solution we set it to 0
         if (char.level <= 50) and (ilvl > 140):
-            ilvl = "(%d)" % ilvl
+            ilvl = 0
         char.ilevel = ilvl
 
     def fetch_char_items(self, char, check_gear):
